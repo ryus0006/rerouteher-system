@@ -72,15 +72,13 @@ class SnapshotService:
     async def _ensure_skill_lookup(self, session: AsyncSession) -> None:
         if self._term_to_skill is not None:
             return
-        term_to_skill: dict[str, str] = {}
         for row in await skills_repo.list_skills(session):
             self._skill_to_canonical[row.skill_id] = row.canonical_name
-            term_to_skill[row.canonical_name.lower()] = row.skill_id
-            if row.aliases:
-                for alias in str(row.aliases).split("|"):
-                    alias = alias.strip().lower()
-                    if alias:
-                        term_to_skill.setdefault(alias, row.skill_id)
+        term_to_skill: dict[str, str] = {}
+        for skill_id, term in await skills_repo.load_alias_dictionary(session):
+            key = term.strip().lower()
+            if key:
+                term_to_skill.setdefault(key, skill_id)
         self._term_to_skill = term_to_skill
 
     # ----------------------------------------------------------------- skills
@@ -150,12 +148,12 @@ class SnapshotService:
         seen: set[tuple[str, str]] = set()
         reframed: list[ReframedSkill] = []
         for row in rows:
-            key = (row.reframed_label, row.break_activity)
+            key = (row.reframed_label, row.activity_id)
             if key in seen:
                 continue
             seen.add(key)
             reframed.append(
-                ReframedSkill(skill=row.reframed_label, source="break", from_activity=row.break_activity)
+                ReframedSkill(skill=row.reframed_label, source="break", from_activity=row.activity_id)
             )
         return reframed
 
@@ -225,13 +223,18 @@ class SnapshotService:
 
     @staticmethod
     async def _roles_from_matches(matches, session: AsyncSession):
-        """Resolve TF-IDF matches to roles via their MASCO code, deduped, order preserved."""
+        """Resolve matches to roles by ESCO code (precise), then MASCO code as fallback.
+
+        Deduped, input order preserved.
+        """
         resolved: list[tuple] = []
         seen: set[str] = set()
         for m in matches:
-            if not m.masco_code:
-                continue
-            role = await roles_repo.get_by_masco_code(session, m.masco_code)
+            role = None
+            if getattr(m, "esco_code", None):
+                role = await roles_repo.get_by_esco_code(session, m.esco_code)
+            if role is None and m.masco_code:
+                role = await roles_repo.get_by_masco_code(session, m.masco_code)
             if role and role.role_id not in seen:
                 seen.add(role.role_id)
                 resolved.append((role, m.score))

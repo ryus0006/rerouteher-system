@@ -38,6 +38,16 @@ class Role:
     masco_code: str
 
 
+async def get_by_esco_code(session: AsyncSession, esco_code: str) -> Role | None:
+    row = (
+        await session.execute(
+            text("SELECT role_id, role_title, masco_code FROM roles WHERE esco_code = :c LIMIT 1"),
+            {"c": esco_code},
+        )
+    ).first()
+    return Role(row.role_id, row.role_title, row.masco_code) if row else None
+
+
 async def get_by_masco_code(session: AsyncSession, masco_code: str) -> Role | None:
     row = (
         await session.execute(

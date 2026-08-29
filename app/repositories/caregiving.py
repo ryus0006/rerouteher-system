@@ -9,20 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 @dataclass
 class ReframedRow:
-    break_activity: str
+    activity_id: str
     reframed_label: str
 
 
 async def reframe(session: AsyncSession, activities: list[str]) -> list[ReframedRow]:
+    """Reframe break activities. `activities` are the activity ids the UI sends."""
     if not activities:
         return []
     rows = (
         await session.execute(
             text(
-                "SELECT DISTINCT break_activity, reframed_label "
-                "FROM caregiving_map WHERE break_activity = ANY(:acts)"
+                "SELECT DISTINCT activity_id, reframed_label "
+                "FROM caregiving_map WHERE activity_id = ANY(:acts)"
             ),
             {"acts": activities},
         )
     ).all()
-    return [ReframedRow(r.break_activity, r.reframed_label) for r in rows]
+    return [ReframedRow(r.activity_id, r.reframed_label) for r in rows]

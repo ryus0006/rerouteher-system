@@ -19,34 +19,29 @@ class SkillMatch:
 class SkillRow:
     skill_id: str
     canonical_name: str
-    aliases: str | None
     skill_type: str
 
 
 async def list_skills(session: AsyncSession) -> list[SkillRow]:
-    """Full skill rows for building a term -> canonical lookup."""
+    """Canonical skill rows for building a skill_id -> canonical lookup."""
     rows = (
-        await session.execute(
-            text("SELECT skill_id, canonical_name, aliases, skill_type FROM skill_taxonomy")
-        )
+        await session.execute(text("SELECT skill_id, canonical_name, skill_type FROM skill_taxonomy"))
     ).all()
-    return [SkillRow(r.skill_id, r.canonical_name, r.aliases, r.skill_type) for r in rows]
+    return [SkillRow(r.skill_id, r.canonical_name, r.skill_type) for r in rows]
 
 
 async def load_alias_dictionary(session: AsyncSession) -> list[tuple[str, str]]:
-    """Return (skill_id, term) pairs from canonical_name + aliases for PhraseMatcher / rapidfuzz."""
+    """(skill_id, term) pairs from canonical names and the skill_aliases table."""
     rows = (
-        await session.execute(text("SELECT skill_id, canonical_name, aliases FROM skill_taxonomy"))
+        await session.execute(
+            text(
+                "SELECT skill_id, canonical_name AS term FROM skill_taxonomy "
+                "UNION ALL "
+                "SELECT skill_id, alias AS term FROM skill_aliases"
+            )
+        )
     ).all()
-    pairs: list[tuple[str, str]] = []
-    for r in rows:
-        pairs.append((r.skill_id, r.canonical_name))
-        if r.aliases:
-            for alias in str(r.aliases).split("|"):
-                alias = alias.strip()
-                if alias:
-                    pairs.append((r.skill_id, alias))
-    return pairs
+    return [(r.skill_id, r.term) for r in rows if r.term]
 
 
 async def match_by_embedding(

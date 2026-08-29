@@ -21,9 +21,19 @@ from app.services.snapshot import SnapshotService
 pytestmark = pytest.mark.asyncio
 
 SKILL_ROWS = [
-    SkillRow("s_pm", "Project management", "project management|project coordination", "soft"),
-    SkillRow("s_budget", "Budgeting", "budgeting|budget management", "soft"),
-    SkillRow("s_ux", "User research", "user research|ux research", "technical"),
+    SkillRow("s_pm", "Project management", "soft"),
+    SkillRow("s_budget", "Budgeting", "soft"),
+    SkillRow("s_ux", "User research", "technical"),
+]
+
+# (skill_id, term) pairs: canonical names + aliases, as load_alias_dictionary returns
+ALIAS_PAIRS = [
+    ("s_pm", "Project management"),
+    ("s_pm", "project coordination"),
+    ("s_budget", "Budgeting"),
+    ("s_budget", "budget management"),
+    ("s_ux", "User research"),
+    ("s_ux", "ux research"),
 ]
 
 
@@ -51,6 +61,9 @@ def patch_repos(monkeypatch):
     async def _list_skills(session):
         return SKILL_ROWS
 
+    async def _load_alias_dictionary(session):
+        return ALIAS_PAIRS
+
     async def _match_by_embedding(session, vec, k, threshold):
         return [SkillMatch("s_ux", "User research", 0.72)]
 
@@ -69,14 +82,19 @@ def patch_repos(monkeypatch):
             NearestRole("r4", "HR Coordinator", 0.60),
         ]
 
+    async def _get_by_esco(session, code):
+        # the FakeMatcher's esco_code resolves to a role
+        return Role("r_mkt", "Marketing Manager", "1234") if code == "1234.1" else None
+
     async def _get_by_masco(session, code):
-        # only masco "1234" resolves to a role (the FakeMatcher's code)
         return Role("r_mkt", "Marketing Manager", "1234") if code == "1234" else None
 
     monkeypatch.setattr(skills_repo, "list_skills", _list_skills)
+    monkeypatch.setattr(skills_repo, "load_alias_dictionary", _load_alias_dictionary)
     monkeypatch.setattr(skills_repo, "match_by_embedding", _match_by_embedding)
     monkeypatch.setattr(caregiving_repo, "reframe", _reframe)
     monkeypatch.setattr(roles_repo, "nearest_by_embedding", _nearest)
+    monkeypatch.setattr(roles_repo, "get_by_esco_code", _get_by_esco)
     monkeypatch.setattr(roles_repo, "get_by_masco_code", _get_by_masco)
 
 
