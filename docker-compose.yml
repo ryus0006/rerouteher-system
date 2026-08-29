@@ -1,0 +1,37 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rerouteher
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # runs on first init only, alphabetical order: import then pgvector migration
+      - ./db/00_import.sql:/docker-entrypoint-initdb.d/00_import.sql:ro
+      - ./db/01_pgvector_migrate.sql:/docker-entrypoint-initdb.d/01_pgvector_migrate.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rerouteher"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/rerouteher
+      CORS_ORIGINS: http://localhost:5173
+      CLASSIFIER_PATH: ml/occupation_clf.pkl
+    ports:
+      - "8000:8000"
+    volumes:
+      # classifier pickle lives outside the image (produced by the data team)
+      - ./ml:/app/ml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

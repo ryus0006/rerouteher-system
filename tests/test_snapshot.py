@@ -1,0 +1,151 @@
+"""Snapshot orchestration tests: skill extraction, occupation tiers, reframe, normalization.
+
+Repos and models are faked so this runs without a DB or torch. Tier 1 (TF-IDF/ESCO) is
+logged only; Tier 2 (embedding over roles) is the response source.
+"""
+import numpy as np
+import pytest
+
+from app.config import Settings
+from app.repositories import caregiving as caregiving_repo
+from app.repositories import roles as roles_repo
+from app.repositories import skills as skills_repo
+from app.repositories.caregiving import ReframedRow
+from app.repositories.roles import NearestRole, Role
+from app.repositories.skills import SkillMatch, SkillRow
+from app.schemas.cv import CV, Experience
+from app.schemas.snapshot import Break, SnapshotRequest
+from app.services.occupation_matcher import OccupationMatch
+from app.services.snapshot import SnapshotService
+
+pytestmark = pytest.mark.asyncio
+
+SKILL_ROWS = [
+    SkillRow("s_pm", "Project management", "project management|project coordination", "soft"),
+    SkillRow("s_budget", "Budgeting", "budgeting|budget management", "soft"),
+    SkillRow("s_ux", "User research", "user research|ux research", "technical"),
+]
+
+
+class FakeEmbedder:
+    def encode(self, texts):
+        return np.zeros((len(texts), 384), dtype="float32")
+
+    def encode_one(self, text):
+        return np.zeros(384, dtype="float32")
+
+
+class FakeMatcher:
+    """Records what Tier 1 was called with; return value is only logged."""
+
+    def __init__(self):
+        self.calls = []
+
+    def predict(self, job_title, skills, work_length_years=None, top_k=3):
+        self.calls.append({"job_title": job_title, "skills": skills})
+        return [OccupationMatch("1234.1", "Some ESCO Role", "1234", 0.9, "tfidf_logreg")]
+
+
+@pytest.fixture(autouse=True)
+def patch_repos(monkeypatch):
+    async def _list_skills(session):
+        return SKILL_ROWS
+
+    async def _match_by_embedding(session, vec, k, threshold):
+        return [SkillMatch("s_ux", "User research", 0.72)]
+
+    async def _reframe(session, activities):
+        rows = []
+        for a in activities:
+            rows.append(ReframedRow(a, "Coordination"))
+            rows.append(ReframedRow(a, "Coordination"))  # duplicate -> dedupe target
+        return rows
+
+    async def _nearest(session, vec, k):
+        return [
+            NearestRole("r1", "Project Coordinator", 0.91),
+            NearestRole("r2", "Operations Executive", 0.77),
+            NearestRole("r3", "Admin Executive", 0.66),
+            NearestRole("r4", "HR Coordinator", 0.60),
+        ]
+
+    async def _get_by_masco(session, code):
+        # only masco "1234" resolves to a role (the FakeMatcher's code)
+        return Role("r_mkt", "Marketing Manager", "1234") if code == "1234" else None
+
+    monkeypatch.setattr(skills_repo, "list_skills", _list_skills)
+    monkeypatch.setattr(skills_repo, "match_by_embedding", _match_by_embedding)
+    monkeypatch.setattr(caregiving_repo, "reframe", _reframe)
+    monkeypatch.setattr(roles_repo, "nearest_by_embedding", _nearest)
+    monkeypatch.setattr(roles_repo, "get_by_masco_code", _get_by_masco)
+
+
+def _request(title="Project Coordinator") -> SnapshotRequest:
+    cv = CV(
+        raw_text="Led project management and budgeting for teams.",
+        experiences=[Experience(title=title, description="Led project management.")],
+        skill_mentions=["budgeting"],
+    )
+    return SnapshotRequest(cv=cv, break_=Break(duration_years=3, activities=["Ran the household"]))
+
+
+async def test_skills_and_embedding_response():
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None)
+    resp = await svc.generate(_request(), session=object())
+
+    names = {p.skill for p in resp.professional_skills}
+    assert "Project management" in names  # exact alias hit in raw_text
+    assert "Budgeting" in names           # from skill_mentions
+    assert "User research" in names       # semantic pass
+    assert resp.previous_occupation.method == "embedding"
+    assert resp.previous_occupation.role == "Project Coordinator"
+    roles = [r.role for r in resp.recommended_roles]
+    assert roles == ["Project Coordinator", "Operations Executive", "Admin Executive"]
+    assert resp.recommended_roles[0].similarity == 1.0
+
+
+async def test_tier1_masco_code_maps_to_role():
+    # FakeMatcher returns masco "1234" -> resolves to a role in the role table
+    matcher = FakeMatcher()
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=matcher)
+    resp = await svc.generate(_request(), session=object())
+
+    assert matcher.calls, "Tier 1 matcher should be invoked"
+    assert resp.previous_occupation.role == "Marketing Manager"  # from MASCO lookup, not embedding
+    assert resp.previous_occupation.method == "classifier"
+    assert resp.recommended_roles[0].role == "Marketing Manager"
+    assert resp.recommended_roles[0].similarity == 1.0
+    # only one MASCO match resolved -> topped up to 3 with nearest roles by embedding
+    assert len(resp.recommended_roles) == 3
+    assert resp.recommended_roles[1].role == "Project Coordinator"
+
+
+async def test_falls_back_to_embedding_when_masco_unresolved():
+    # matcher returns a masco code that does not resolve -> Tier 2 embedding
+    class NoMatchMatcher:
+        def predict(self, job_title, skills, work_length_years=None, top_k=3):
+            return [OccupationMatch("9999.1", "Unknown", "9999", 0.5, "tfidf_retrieval")]
+
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=NoMatchMatcher())
+    resp = await svc.generate(_request(), session=object())
+
+    assert resp.previous_occupation.role == "Project Coordinator"
+    assert resp.previous_occupation.method == "embedding"
+
+
+async def test_normalization_reaches_tier1():
+    matcher = FakeMatcher()
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=matcher)
+    await svc.generate(_request(title="HR Manager"), session=object())
+
+    # "HR Manager" is alias-normalized before Tier 1 sees it
+    assert matcher.calls[0]["job_title"] == "human resources manager"
+
+
+async def test_reframe_dedupes():
+    svc = SnapshotService(Settings(), embedder=None, tfidf_matcher=None)
+    resp = await svc.generate(_request(), session=object())
+    assert len(resp.reframed_skills) == 1
+    assert resp.reframed_skills[0].skill == "Coordination"
+    # no embedder -> no occupation match
+    assert resp.previous_occupation is None

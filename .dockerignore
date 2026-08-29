@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.env
+.DS_Store
+tests
+plan.md
+README.md
+# db/ and ml/ are mounted by compose, not baked into the image
+db
+ml
