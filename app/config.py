@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     tfidf_model_path: str = "ml/tfidf_logreg.joblib"
 
     occupation_confidence_threshold: float = 0.65
-    skill_cosine_threshold: float = 0.55
+    skill_cosine_threshold: float = 0.48
 
     ai_exposure_low: float = 0.2
     ai_exposure_medium: float = 0.4
