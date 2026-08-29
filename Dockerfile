@@ -29,6 +29,11 @@ COPY models ./models
 # App code (db/, ml/, tests/ excluded via .dockerignore where not needed at runtime).
 COPY app ./app
 
-EXPOSE 8000
+# Run as a non-root user (matches workspace convention).
+RUN useradd -u 3000 -m appuser && chown -R 3000:3000 /app
+USER 3000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Network interface (8080; 8000 is taken by Coolify on the host).
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

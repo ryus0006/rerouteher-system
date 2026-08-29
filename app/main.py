@@ -80,7 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(snapshot.router)
     app.include_router(gap.router)
 
-    @app.get("/health", tags=["meta"])
+    @app.get("/api/health", tags=["meta"])
     async def health():
         return {"status": "ok"}
 

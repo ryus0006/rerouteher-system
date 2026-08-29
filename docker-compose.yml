@@ -20,15 +20,21 @@ services:
 
   api:
     build: .
+    container_name: rerouteher-api
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/rerouteher
-      CORS_ORIGINS: http://localhost:5173
-      CLASSIFIER_PATH: ml/occupation_clf.pkl
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/rerouteher}
+      # Set in the Coolify UI (api resource -> Environment Variables) for production.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     ports:
-      - "8000:8000"
+      - "8080:8080"
     volumes:
-      # classifier pickle lives outside the image (produced by the data team)
+      # TF-IDF occupation model lives outside the image (produced by the data team)
       - ./ml:/app/ml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     depends_on:
       db:
         condition: service_healthy

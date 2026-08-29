@@ -43,11 +43,11 @@ done
 # Wait for the API health endpoint
 echo "Waiting for the API..."
 for i in $(seq 1 40); do
-    if curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
+    if curl -sf "http://localhost:8080/api/health" > /dev/null 2>&1; then
         break
     fi
     if [ "$i" = "40" ]; then
-        echo "API did not respond on /health. Check logs:"
+        echo "API did not respond on /api/health. Check logs:"
         docker compose logs api | tail -40
         exit 1
     fi
@@ -59,9 +59,9 @@ echo "=========================================="
 echo "Local environment is ready!"
 echo "=========================================="
 echo ""
-echo "API:        http://localhost:8000"
-echo "API docs:   http://localhost:8000/docs"
-echo "Health:     http://localhost:8000/health"
+echo "API:        http://localhost:8080"
+echo "API docs:   http://localhost:8080/docs"
+echo "Health:     http://localhost:8080/api/health"
 echo ""
 echo "PostgreSQL: localhost:${DB_PORT}"
 echo "  Database: rerouteher"

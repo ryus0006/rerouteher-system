@@ -33,10 +33,10 @@ docker compose up --build
 
 On first boot the `db` service auto-loads `db/00_import.sql` (reference data) then `db/01_pgvector_migrate.sql` (converts the embedding columns to pgvector `vector(384)` and adds cosine indexes). The API waits for the DB healthcheck before starting.
 
-- API: http://localhost:8000/docs (or `/health`)
+- API: http://localhost:8080/docs (or `/api/health`)
 - Postgres: localhost:5432 (db `rerouteher`, user/pass `postgres`)
 
-Drop the classifier pickle at `ml/occupation_clf.pkl` (produced by the data team's `train_classifier.py`); it is mounted read-only into the API container. The app boots without it (occupation falls back to embedding).
+The TF-IDF occupation model lives at `ml/tfidf_logreg.joblib` (produced by the data team) and is mounted read-only into the API container. The app boots without it (occupation falls back to embedding).
 
 To re-run DB init from scratch: `docker compose down -v` (wipes the `pgdata` volume) then `up` again.
 
@@ -51,7 +51,7 @@ cp .env.example .env   # edit DATABASE_URL to your local Postgres
 psql -v ON_ERROR_STOP=1 -d rerouteher -f db/00_import.sql
 psql -v ON_ERROR_STOP=1 -d rerouteher -f db/01_pgvector_migrate.sql
 
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8080
 ```
 
 ## Test
