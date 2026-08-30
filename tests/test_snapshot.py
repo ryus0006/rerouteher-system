@@ -82,7 +82,7 @@ def patch_repos(monkeypatch):
             NearestRole("r4", "HR Coordinator", 0.60),
         ]
 
-    async def _get_by_esco(session, code):
+    async def _get_by_esco(session, code, esco_title=None):
         # the FakeMatcher's esco_code resolves to a role
         return Role("r_mkt", "Marketing Manager", "1234") if code == "1234.1" else None
 

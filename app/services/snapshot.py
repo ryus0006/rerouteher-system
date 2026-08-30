@@ -293,7 +293,9 @@ class SnapshotService:
         for m in matches:
             role = None
             if getattr(m, "esco_code", None):
-                role = await roles_repo.get_by_esco_code(session, m.esco_code)
+                role = await roles_repo.get_by_esco_code(
+                    session, m.esco_code, getattr(m, "esco_title", None)
+                )
             if role is None and m.masco_code:
                 role = await roles_repo.get_by_masco_code(session, m.masco_code)
             if role and role.role_id not in seen:

@@ -38,11 +38,25 @@ class Role:
     masco_code: str
 
 
-async def get_by_esco_code(session: AsyncSession, esco_code: str) -> Role | None:
+async def get_by_esco_code(
+    session: AsyncSession, esco_code: str, esco_title: str | None = None
+) -> Role | None:
+    # One ESCO code maps to several MASCO roles (e.g. 2512.4 -> Software Developer,
+    # Technical Specialist (.Net), Computer Programmer, C/C++ Programmer), so pick the role
+    # whose title matches the predicted ESCO title, then fall back to a deterministic order.
     row = (
         await session.execute(
-            text("SELECT role_id, role_title, masco_code FROM roles WHERE esco_code = :c LIMIT 1"),
-            {"c": esco_code},
+            text(
+                "SELECT role_id, role_title, masco_code FROM roles WHERE esco_code = :c "
+                "ORDER BY (lower(role_title) = lower(:t)) DESC, "
+                "(role_title ILIKE :like) DESC, masco_code "
+                "LIMIT 1"
+            ),
+            {
+                "c": esco_code,
+                "t": esco_title or "",
+                "like": f"%{esco_title}%" if esco_title else "",
+            },
         )
     ).first()
     return Role(row.role_id, row.role_title, row.masco_code) if row else None
