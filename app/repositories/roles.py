@@ -92,7 +92,8 @@ async def get_role_with_skills(session: AsyncSession, role_title: str) -> RoleWi
         )
     ).all()
     skills = [
-        RoleSkillRow(r.skill_id, r.skill_name, r.skill_type, float(r.importance)) for r in rows
+        RoleSkillRow(str(r.skill_id), r.skill_name, r.skill_type, float(r.importance))
+        for r in rows
     ]
     return RoleWithSkills(role.role_id, role.role_title, role.ai_exposure, skills)
 

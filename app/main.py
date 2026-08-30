@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     app.state.snapshot_service = SnapshotService(
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher
     )
-    app.state.gap_service = GapService(settings=settings, embedder=embedder)
+    app.state.gap_service = GapService(settings=settings)
 
     logger.info(
         "startup: embedder=%s tfidf=%s spacy=%s skill_dict=%d",

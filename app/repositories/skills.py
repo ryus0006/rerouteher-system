@@ -44,33 +44,6 @@ async def load_alias_dictionary(session: AsyncSession) -> list[tuple[str, str]]:
     return [(r.skill_id, r.term) for r in rows if r.term]
 
 
-async def get_embeddings_by_ids(
-    session: AsyncSession, skill_ids: list[str]
-) -> dict[str, np.ndarray]:
-    """L2-normalized embedding per skill_id, for cosine via dot product.
-
-    Casts to text so it parses whether the column is pgvector `[..]` or `real[]` `{..}`.
-    """
-    if not skill_ids:
-        return {}
-    rows = (
-        await session.execute(
-            text("SELECT skill_id, embedding::text AS emb FROM skill_taxonomy WHERE skill_id = ANY(:ids)"),
-            {"ids": skill_ids},
-        )
-    ).all()
-    out: dict[str, np.ndarray] = {}
-    for r in rows:
-        if not r.emb:
-            continue
-        vals = [float(x) for x in r.emb.strip("[]{} ").split(",") if x.strip()]
-        v = np.asarray(vals, dtype="float32")
-        n = float(np.linalg.norm(v))
-        if n > 0:
-            out[r.skill_id] = v / n
-    return out
-
-
 async def match_by_embedding(
     session: AsyncSession, query_vec: np.ndarray, k: int, threshold: float
 ) -> list[SkillMatch]:
