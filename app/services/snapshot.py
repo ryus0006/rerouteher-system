@@ -170,10 +170,14 @@ class SnapshotService:
             if key in seen:
                 continue
             seen.add(key)
+            # Resolve the reframed label to a skill_taxonomy skill_id by name (exact, then
+            # alias) so the break skill can be matched in the gap. No id if the label is not
+            # in the taxonomy - it then stays display-only.
+            skill_id = (self._term_to_skill or {}).get(row.reframed_label.strip().lower())
             reframed.append(
                 ReframedSkill(
                     skill=row.reframed_label,
-                    skill_id=row.skill_id,
+                    skill_id=skill_id,
                     source="break",
                     from_activity=row.activity_id,
                 )
