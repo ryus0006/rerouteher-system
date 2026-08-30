@@ -163,13 +163,13 @@ class SnapshotService:
         self, req: SnapshotRequest, session: AsyncSession
     ) -> list[ReframedSkill]:
         rows = await caregiving_repo.reframe(session, req.break_.activities)
-        seen: set[tuple[str, str]] = set()
+        seen: set[str] = set()
         reframed: list[ReframedSkill] = []
         for row in rows:
-            key = (row.reframed_label, row.activity_id)
-            if key in seen:
+            # one chip per reframed skill even when several activities reframe to it
+            if row.reframed_label in seen:
                 continue
-            seen.add(key)
+            seen.add(row.reframed_label)
             skill_id = (self._term_to_skill or {}).get(row.onet_skill_name.strip().lower())
             reframed.append(
                 ReframedSkill(

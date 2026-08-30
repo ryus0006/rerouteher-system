@@ -5,7 +5,8 @@ whose embedding is at least gap_cosine_threshold similar - cosine is computed on
 this role's skills and the user's skills, never the whole taxonomy, so a concrete CV skill
 (Java (Computer Programming)) covers the role's parent skill (Computer Programming).
 Readiness blends the two bands (role skills, AI/digital) by the role's AI-exposure, and
-the focus list is the top-3 uncovered skills by readiness uplift. Nothing is stored.
+the gap list is every uncovered skill ranked by readiness uplift (the UI highlights the
+top few and counts the rest). Nothing is stored.
 """
 from __future__ import annotations
 
@@ -93,7 +94,7 @@ class GapService:
                 Gap(skill=rs.skill_name, band=band, importance=float(rs.importance), uplift=uplift)
             )
         gaps.sort(key=lambda g: (g.uplift, g.importance), reverse=True)
-        return gaps[:3]
+        return gaps
 
     def _uplift(self, role_skills, cov: dict[str, float], exposure_w, base: float, skill_id: str) -> float:
         # marginal readiness gain if this skill were covered
