@@ -20,9 +20,9 @@ class Settings(BaseSettings):
     # gap coverage: a role skill counts as covered when a user skill is at least this similar
     gap_cosine_threshold: float = 0.50
 
-    ai_exposure_low: float = 0.2
-    ai_exposure_medium: float = 0.4
-    ai_exposure_high: float = 0.6
+    ai_exposure_low: float = 0.1
+    ai_exposure_medium: float = 0.15
+    ai_exposure_high: float = 0.2
 
     max_cv_bytes: int = 10 * 1024 * 1024
 
