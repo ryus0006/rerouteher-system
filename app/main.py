@@ -55,7 +55,9 @@ async def lifespan(app: FastAPI):
 
     # Wire services onto app state. The snapshot service loads its own skill lookup
     # lazily from the DB on first request and caches it.
-    app.state.cv_extractor = CVExtractor(nlp=nlp, skill_dictionary=skill_dictionary)
+    app.state.cv_extractor = CVExtractor(
+        nlp=nlp, skill_dictionary=skill_dictionary, embedder=embedder
+    )
     app.state.snapshot_service = SnapshotService(
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher
     )

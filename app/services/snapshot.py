@@ -34,6 +34,10 @@ _SENTENCE_SPLIT_RE = re.compile(r"[.;•\n]+")
 _WORD_RE = re.compile(r"[a-z][a-z0-9+.#-]*")
 _MAX_SEMANTIC_SPANS = 20
 _MAX_PHRASE_WORDS = 4
+# a title whose top occupation match scores below this is treated as junk (e.g. a name)
+_OCCUPATION_TITLE_FLOOR = 0.3
+# a non-recent title only overrides the most-recent one if it scores at least this much higher
+_OCCUPATION_OVERRIDE_MARGIN = 0.25
 
 
 def _phrase_set(text_lower: str, max_n: int = _MAX_PHRASE_WORDS) -> set[str]:
@@ -168,26 +172,51 @@ class SnapshotService:
     async def _match_occupation(
         self, req: SnapshotRequest, professional: list[ProfessionalSkill], session: AsyncSession
     ) -> tuple[PreviousOccupation | None, list[RecommendedRole]]:
-        # alias-normalize the query inputs once so both tiers see the same normalized text
-        job_title = normalize_text(next((e.title for e in req.cv.experiences if e.title), ""))
+        # alias-normalize the query inputs once so both tiers see the same normalized text.
+        # Titles are taken in CV order (most recent first) so the previous occupation is the
+        # last job held. We score each title and pick the first one that clears a confidence
+        # floor, which skips junk titles (e.g. a two-column layout putting the name first)
+        # without letting a minor/older role override the most recent one.
+        titles: list[str] = []
+        seen_titles: set[str] = set()
+        for exp in req.cv.experiences:
+            t = normalize_text(exp.title or "")
+            if t and t not in seen_titles:
+                seen_titles.add(t)
+                titles.append(t)
         skill_names = [normalize_text(p.skill) for p in professional] or [
             normalize_text(m) for m in req.cv.skill_mentions
         ]
 
         # profile embedding: tops up the classifier recommendations and drives the Tier 2 fallback
-        emb_text = self._embedding_text(job_title, skill_names)
+        emb_text = self._embedding_text(" ".join(titles), skill_names)
         profile_vec = (
             self._embedder.encode_one(emb_text) if (self._embedder is not None and emb_text) else None
         )
 
-        # Tier 1: TF-IDF matcher -> map each match's MASCO code to a role in the role table
-        if self._tfidf is not None and (job_title or skill_names):
-            tier1 = []
-            try:
-                tier1 = self._tfidf.predict(job_title=job_title, skills=skill_names, top_k=5)
-                logger.info("occupation Tier 1 (tfidf): %s", tier1)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Tier 1 occupation matcher failed: %s", exc)
+        # Tier 1: classify each title, then pick the most recent job that clears the floor,
+        # unless another title scores decisively higher (margin) - that catches a mislabeled
+        # recent title while still defaulting to the last job held.
+        if self._tfidf is not None and (titles or skill_names):
+            per_title: list[tuple[float, list]] = []  # (top score, predictions) in CV order
+            for t in titles or [""]:
+                try:
+                    preds = self._tfidf.predict(job_title=t, skills=skill_names, top_k=5)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Tier 1 occupation matcher failed for %r: %s", t, exc)
+                    continue
+                if preds:
+                    per_title.append((preds[0].score, preds))
+
+            recent = next(((s, p) for s, p in per_title if s >= _OCCUPATION_TITLE_FLOOR), None)
+            strongest = max(per_title, key=lambda x: x[0], default=None)
+            if recent is None:
+                tier1 = strongest[1] if strongest else []
+            elif strongest[0] >= recent[0] + _OCCUPATION_OVERRIDE_MARGIN:
+                tier1 = strongest[1]  # a decisively stronger title overrides the recent one
+            else:
+                tier1 = recent[1]
+            logger.info("occupation Tier 1: %s", tier1[:5])
             resolved = await self._roles_from_matches(tier1, session)
             if resolved:
                 top_role, top_score = resolved[0]

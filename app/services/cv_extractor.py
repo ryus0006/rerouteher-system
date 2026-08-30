@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pymupdf  # PyMuPDF (the modern import; `fitz` is deprecated)
 
 from app.schemas.cv import CV, Experience
@@ -37,6 +38,39 @@ _OTHER_SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- Semantic section detection (embedding fallback for headers regex misses) ---
+# A short line whose embedding is this close to a header prototype is a section header.
+_HEADER_SIM_THR = 0.62
+_MAX_HEADER_WORDS = 4
+_SECTION_PHRASES = {
+    "EXPERIENCE": [
+        "work experience",
+        "professional experience",
+        "employment history",
+        "work history",
+        "experience",
+    ],
+    "OTHER": [
+        "education",
+        "skills",
+        "technical skills",
+        "core skills",
+        "software knowledge",
+        "projects",
+        "summary",
+        "profile",
+        "objective",
+        "certifications",
+        "languages",
+        "awards",
+        "references",
+        "contact",
+        "personal information",
+        "hobbies",
+        "interests",
+    ],
+}
+
 # --- Date ranges (anchor each experience entry) ---
 _MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
 _DATE = rf"(?:{_MONTH}\s*)?(?:\d{{1,2}}[/-])?\d{{4}}"
@@ -47,11 +81,25 @@ _DATE_RANGE_RE = re.compile(
 
 
 class CVExtractor:
-    def __init__(self, nlp, skill_dictionary: list[str]) -> None:
+    def __init__(self, nlp, skill_dictionary: list[str], embedder=None) -> None:
         # nlp: a loaded spaCy pipeline (may be None in degraded mode)
         # skill_dictionary: skill terms to match against (canonical names + aliases)
+        # embedder: sentence embedder for semantic section detection (may be None)
         self._nlp = nlp
         self._skill_dictionary = [t for t in skill_dictionary if t and len(t) >= 3]
+        self._embedder = embedder
+        self._proto_mat = None  # (N, dim) L2-normalized header prototypes
+        self._proto_labels: list[str] = []
+        if embedder is not None:
+            phrases, labels = [], []
+            for label, terms in _SECTION_PHRASES.items():
+                for term in terms:
+                    phrases.append(term)
+                    labels.append(label)
+            mat = np.asarray(embedder.encode(phrases), dtype="float32")
+            mat /= np.linalg.norm(mat, axis=1, keepdims=True)
+            self._proto_mat = mat
+            self._proto_labels = labels
 
     def parse(self, pdf_bytes: bytes) -> CV:
         raw_text = self._extract_text(pdf_bytes)
@@ -108,29 +156,73 @@ class CVExtractor:
     def _segment_experiences(self, raw_text: str) -> list[Experience]:
         lines = [ln.rstrip() for ln in raw_text.splitlines()]
         section = self._experience_section(lines)
-        entries = self._split_entries(section)
+        experiences = self._experiences_from(section)
+        # Layouts the sectioner cannot follow (e.g. a two-column reading order that
+        # interleaves sections) can leave the experience section empty. Fall back to
+        # the whole document so the date splitter still recovers entries.
+        if not experiences and section is not lines:
+            experiences = self._experiences_from(lines)
+        return experiences
+
+    def _experiences_from(self, section_lines: list[str]) -> list[Experience]:
+        entries = self._split_entries(section_lines)
         experiences = [self._build_experience(entry) for entry in entries]
         return [e for e in experiences if e is not None]
 
     def _experience_section(self, lines: list[str]) -> list[str]:
-        """Return the work-history lines: from the experience header to the next section.
+        """Return the work-history lines by tracking the current section.
 
-        If no explicit header is present, fall back to every line, so the date-range
-        splitter downstream can still recover entries.
+        Section headers are detected first by regex (certain, cheap) and, for
+        headers the regex misses, by embedding similarity (when an embedder is
+        available). Lines start in the PERSONAL/contact block, so the candidate's
+        name and contact details are never read as an experience. If no experience
+        header is found at all, fall back to every line so the date-range splitter
+        can still recover entries.
         """
-        start = None
-        for i, line in enumerate(lines):
-            if _EXPERIENCE_HEADER_RE.match(line):
-                start = i + 1
-                break
-        if start is None:
-            return lines
-        end = len(lines)
-        for j in range(start, len(lines)):
-            if _OTHER_SECTION_RE.match(lines[j]):
-                end = j
-                break
-        return lines[start:end]
+        exp: list[str] = []
+        current = "PERSONAL"
+        found_experience = False
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                if current == "EXPERIENCE":
+                    exp.append(line)  # keep blank lines: the entry splitter uses them
+                continue
+            if _EXPERIENCE_HEADER_RE.match(stripped):
+                current = "EXPERIENCE"
+                found_experience = True
+                continue
+            if _OTHER_SECTION_RE.match(stripped):
+                current = "OTHER"
+                continue
+            section = self._semantic_section(stripped)
+            if section is not None:
+                current = section
+                found_experience = found_experience or section == "EXPERIENCE"
+                continue
+            if current == "EXPERIENCE":
+                exp.append(line)
+        if found_experience:
+            return exp
+        return lines
+
+    def _semantic_section(self, line: str) -> str | None:
+        """Embedding-based header detection: 'EXPERIENCE', 'OTHER', or None (not a header)."""
+        if self._proto_mat is None:
+            return None
+        if not (1 <= len(line.split()) <= _MAX_HEADER_WORDS):
+            return None
+        if _DATE_RANGE_RE.search(line):  # a dated line is content, not a header
+            return None
+        vec = np.asarray(self._embedder.encode_one(line), dtype="float32")
+        norm = np.linalg.norm(vec)
+        if norm == 0:
+            return None
+        sims = self._proto_mat @ (vec / norm)
+        best = int(np.argmax(sims))
+        if sims[best] < _HEADER_SIM_THR:
+            return None
+        return self._proto_labels[best]
 
     @staticmethod
     def _split_entries(section: list[str]) -> list[list[str]]:
@@ -167,17 +259,26 @@ class CVExtractor:
         # content lines with any inline date range stripped; drop lines that were only a date
         clean_lines: list[str] = []
         for raw in entry:
-            stripped = _DATE_RANGE_RE.sub("", raw).strip(" -–—|,\t")
+            stripped = _DATE_RANGE_RE.sub("", raw).strip(" -–—|,:\t")
             if stripped:
                 clean_lines.append(stripped)
 
-        # title: first content line that is not the organisation
+        # title: prefer the text on the dated line (many CVs write "DATE : Title" or
+        # "Title  DATE"), which is the actual role; otherwise the first non-org line.
         title = None
-        for line in clean_lines:
-            if organisation and line.lower() == organisation.lower():
-                continue
-            title = line
-            break
+        for raw in entry:
+            if _DATE_RANGE_RE.search(raw):
+                residual = _DATE_RANGE_RE.sub("", raw).strip(" -–—|,:()[]{}\t")
+                has_words = re.search(r"[A-Za-z]", residual) is not None
+                if has_words and (organisation is None or residual.lower() != organisation.lower()):
+                    title = residual
+                break
+        if title is None:
+            for line in clean_lines:
+                if organisation and line.lower() == organisation.lower():
+                    continue
+                title = line
+                break
 
         # organisation fallback: the next content line after the title
         if organisation is None:
