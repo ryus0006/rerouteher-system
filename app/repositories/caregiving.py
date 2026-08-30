@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 class ReframedRow:
     activity_id: str
     reframed_label: str
+    onet_skill_name: str
 
 
 async def reframe(session: AsyncSession, activities: list[str]) -> list[ReframedRow]:
@@ -20,10 +21,10 @@ async def reframe(session: AsyncSession, activities: list[str]) -> list[Reframed
     rows = (
         await session.execute(
             text(
-                "SELECT DISTINCT activity_id, reframed_label "
+                "SELECT DISTINCT activity_id, reframed_label, onet_skill_name "
                 "FROM caregiving_map WHERE activity_id = ANY(:acts)"
             ),
             {"acts": activities},
         )
     ).all()
-    return [ReframedRow(r.activity_id, r.reframed_label) for r in rows]
+    return [ReframedRow(r.activity_id, r.reframed_label, r.onet_skill_name) for r in rows]

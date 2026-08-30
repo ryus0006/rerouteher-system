@@ -70,8 +70,8 @@ def patch_repos(monkeypatch):
     async def _reframe(session, activities):
         rows = []
         for a in activities:
-            rows.append(ReframedRow(a, "Coordination"))
-            rows.append(ReframedRow(a, "Coordination"))  # duplicate -> dedupe target
+            rows.append(ReframedRow(a, "Coordination", "Coordination"))
+            rows.append(ReframedRow(a, "Coordination", "Coordination"))  # duplicate -> dedupe target
         return rows
 
     async def _nearest(session, vec, k):
