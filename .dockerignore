@@ -12,6 +12,5 @@ __pycache__
 tests
 plan.md
 README.md
-# db/ and ml/ are mounted by compose, not baked into the image
+# db/ is initialized separately (compose/entrypoint), not baked into the image
 db
-ml

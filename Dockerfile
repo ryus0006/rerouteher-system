@@ -26,7 +26,11 @@ RUN python -m spacy download en_core_web_sm
 # build performs no Hugging Face download and startup loads it from this path.
 COPY models ./models
 
-# App code (db/, ml/, tests/ excluded via .dockerignore where not needed at runtime).
+# Vendored TF-IDF occupation classifier (~25MB). Baked in so Tier 1 works on hosts
+# that do not mount the compose volumes (e.g. Coolify).
+COPY ml ./ml
+
+# App code (db/, tests/ excluded via .dockerignore where not needed at runtime).
 COPY app ./app
 
 # Run as a non-root user (matches workspace convention).
