@@ -233,22 +233,30 @@ class SnapshotService:
             if resolved:
                 top_role, top_score = resolved[0]
                 previous = PreviousOccupation(
-                    role=top_role.role_title, confidence=round(top_score, 3), method="classifier"
+                    role=top_role.role_title, role_id=top_role.role_id,
+                    confidence=round(top_score, 3), method="classifier",
                 )
                 recommended = [
-                    RecommendedRole(role=role.role_title, similarity=1.0 if i == 0 else round(score, 3))
+                    RecommendedRole(
+                        role=role.role_title, role_id=role.role_id,
+                        similarity=1.0 if i == 0 else round(score, 3),
+                    )
                     for i, (role, score) in enumerate(resolved[:3])
                 ]
                 # top up to 3 with the nearest roles by embedding, excluding ones already listed
                 if len(recommended) < 3 and profile_vec is not None:
                     seen_ids = {role.role_id for role, _ in resolved}
-                    seen_titles = {r.role for r in recommended}
                     for r in await roles_repo.nearest_by_embedding(session, profile_vec, k=6):
                         if len(recommended) >= 3:
                             break
-                        if r.role_id not in seen_ids and r.role_title not in seen_titles:
-                            recommended.append(RecommendedRole(role=r.role_title, similarity=round(r.similarity, 3)))
-                            seen_titles.add(r.role_title)
+                        if r.role_id not in seen_ids:
+                            recommended.append(
+                                RecommendedRole(
+                                    role=r.role_title, role_id=r.role_id,
+                                    similarity=round(r.similarity, 3),
+                                )
+                            )
+                            seen_ids.add(r.role_id)
                 return previous, recommended
 
         # Tier 2 fallback: embedding match over the role pool
@@ -259,14 +267,19 @@ class SnapshotService:
             return None, []
         top = nearest[0]
         previous = PreviousOccupation(
-            role=top.role_title, confidence=round(top.similarity, 3), method="embedding"
+            role=top.role_title, role_id=top.role_id,
+            confidence=round(top.similarity, 3), method="embedding",
         )
-        recommended = [RecommendedRole(role=previous.role, similarity=1.0)]
+        recommended = [RecommendedRole(role=top.role_title, role_id=top.role_id, similarity=1.0)]
+        seen_ids = {top.role_id}
         for r in await roles_repo.nearest_by_embedding(session, profile_vec, k=4):
             if len(recommended) >= 3:
                 break
-            if r.role_title != previous.role:
-                recommended.append(RecommendedRole(role=r.role_title, similarity=round(r.similarity, 3)))
+            if r.role_id not in seen_ids:
+                recommended.append(
+                    RecommendedRole(role=r.role_title, role_id=r.role_id, similarity=round(r.similarity, 3))
+                )
+                seen_ids.add(r.role_id)
         return previous, recommended
 
     @staticmethod

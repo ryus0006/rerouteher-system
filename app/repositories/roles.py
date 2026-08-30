@@ -70,14 +70,13 @@ async def get_by_masco_code(session: AsyncSession, masco_code: str) -> Role | No
     return Role(row.role_id, row.role_title, row.masco_code) if row else None
 
 
-async def get_role_with_skills(session: AsyncSession, role_title: str) -> RoleWithSkills | None:
+async def get_role_with_skills_by_id(session: AsyncSession, role_id: str) -> RoleWithSkills | None:
+    """Load a role and its skills by primary key, so the target role is unambiguous
+    (role titles are not unique, e.g. duplicate 'Software Developer' rows)."""
     role = (
         await session.execute(
-            text(
-                "SELECT role_id, role_title, ai_exposure FROM roles "
-                "WHERE role_title = :t LIMIT 1"
-            ),
-            {"t": role_title},
+            text("SELECT role_id, role_title, ai_exposure FROM roles WHERE role_id = :rid"),
+            {"rid": role_id},
         )
     ).first()
     if role is None:

@@ -39,12 +39,14 @@ class ReframedSkill(BaseModel):
 
 class PreviousOccupation(BaseModel):
     role: str
+    role_id: str
     confidence: float
     method: Literal["classifier", "embedding"]
 
 
 class RecommendedRole(BaseModel):
     role: str
+    role_id: str
     similarity: float
 
 

@@ -22,13 +22,16 @@ class GapService:
         self._settings = settings
 
     async def compute(self, req: GapRequest, session: AsyncSession) -> GapResponse:
-        role = await roles_repo.get_role_with_skills(session, req.target_role)
+        role = await roles_repo.get_role_with_skills_by_id(session, req.target_role_id)
         if role is None:
             # unknown target role: nothing to score against
-            logger.info("gap: target=%r resolved=None -> readiness=0.0", req.target_role)
+            logger.info(
+                "gap: target_id=%s (%r) resolved=None -> readiness=0.0",
+                req.target_role_id, req.target_role,
+            )
             return GapResponse(readiness=0.0, skills_have=[], gaps=[])
 
-        have_ids = {s.skill_id for s in req.skills if s.skill_id}
+        have_ids = {sid for sid in req.skill_ids if sid}
         cov = {rs.skill_id: (1.0 if rs.skill_id in have_ids else 0.0) for rs in role.skills}
 
         exposure_w = self._settings.ai_exposure_weight(role.ai_exposure)
@@ -36,8 +39,8 @@ class GapService:
         skills_have = sorted({rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0})
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
         logger.info(
-            "gap: target=%r -> role_id=%s role_skills=%d have_ids=%d overlap=%d readiness=%.1f",
-            req.target_role, role.role_id, len(role.skills), len(have_ids),
+            "gap: target_id=%s (%r) -> role_id=%s role_skills=%d have_ids=%d overlap=%d readiness=%.1f",
+            req.target_role_id, req.target_role, role.role_id, len(role.skills), len(have_ids),
             sum(1 for v in cov.values() if v >= 1.0), readiness,
         )
         return GapResponse(readiness=round(readiness, 1), skills_have=skills_have, gaps=gaps)
