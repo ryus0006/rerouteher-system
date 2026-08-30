@@ -65,6 +65,13 @@ class SnapshotService:
         professional = await self._extract_skills(req, session)
         reframed = await self._reframe_break(req, session)
         previous, recommended = await self._match_occupation(req, professional, session)
+        logger.info(
+            "snapshot: professional=%d reframed=%d occupation=%s recommended=%s",
+            len(professional),
+            len(reframed),
+            (previous.role, previous.method, round(previous.confidence, 3)) if previous else None,
+            [r.role for r in recommended],
+        )
         return SnapshotResponse(
             professional_skills=professional,
             reframed_skills=reframed,

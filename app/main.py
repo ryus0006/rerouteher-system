@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import cv, gap, snapshot
 from app.config import get_settings
+from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.db import SessionLocal
 from app.repositories import skills as skills_repo
 from app.services.cv_extractor import CVExtractor
@@ -20,6 +21,7 @@ from app.services.gap import GapService
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.snapshot import SnapshotService
 
+configure_logging()
 logger = logging.getLogger("rerouteher")
 
 
@@ -63,6 +65,14 @@ async def lifespan(app: FastAPI):
     )
     app.state.gap_service = GapService(settings=settings, embedder=embedder)
 
+    logger.info(
+        "startup: embedder=%s tfidf=%s spacy=%s skill_dict=%d",
+        embedder is not None,
+        tfidf_matcher is not None,
+        nlp is not None,
+        len(skill_dictionary),
+    )
+
     yield
 
 
@@ -77,6 +87,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_middleware(RequestLoggingMiddleware)
 
     app.include_router(cv.router)
     app.include_router(snapshot.router)

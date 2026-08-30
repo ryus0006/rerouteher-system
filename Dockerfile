@@ -40,4 +40,5 @@ USER 3000
 # Network interface (8080; 8000 is taken by Coolify on the host).
 EXPOSE 8080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# --no-access-log: the RequestLoggingMiddleware logs richer per-request info (bodies).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]
