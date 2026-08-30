@@ -55,6 +55,18 @@ async def get_by_masco_code(session: AsyncSession, masco_code: str) -> Role | No
             {"c": masco_code},
         )
     ).first()
+    if row is None and masco_code:
+        # The classifier emits a 4-digit unit-group code (e.g. 2512) while roles are stored
+        # at the granular level (e.g. 251201). Resolve by group prefix, lowest code first.
+        row = (
+            await session.execute(
+                text(
+                    "SELECT role_id, role_title, masco_code FROM roles "
+                    "WHERE masco_code LIKE :p ORDER BY masco_code LIMIT 1"
+                ),
+                {"p": f"{masco_code}%"},
+            )
+        ).first()
     return Role(row.role_id, row.role_title, row.masco_code) if row else None
 
 
