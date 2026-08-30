@@ -15,7 +15,7 @@ class GapRequest(BaseModel):
 
 class Gap(BaseModel):
     skill: str
-    band: Literal["role", "ai_digital"]
+    band: Literal["role", "ai_usage"]
     importance: float
     uplift: float
 

@@ -16,7 +16,8 @@ def _role() -> RoleWithSkills:
         skills=[
             RoleSkillRow("s1", "User research", "technical", 80),
             RoleSkillRow("s2", "Prototyping", "technical", 70),
-            RoleSkillRow("s3", "AI design tools", "digital", 90),
+            RoleSkillRow("s3", "Coordination", "soft", 60),
+            RoleSkillRow("s4", "Use AI design tools", "ai_usage", 90),
         ],
     )
 
@@ -49,5 +50,25 @@ def test_uplift_is_positive_for_missing_skill():
     role = _role()
     cov = {s.skill_id: 0.0 for s in role.skills}
     base = svc._readiness(role.skills, cov, 0.4)
-    up = svc._uplift(role.skills, cov, 0.4, base, "s3")
+    up = svc._uplift(role.skills, cov, 0.4, base, "s4")
     assert up > 0
+
+
+def test_soft_skills_are_not_listed_as_gaps():
+    svc = _service()
+    role = _role()
+    cov = {s.skill_id: 0.0 for s in role.skills}
+    base = svc._readiness(role.skills, cov, 0.4)
+    gaps = {g.skill for g in svc._rank_gaps(role.skills, cov, 0.4, base)}
+    assert "Coordination" not in gaps  # soft counts toward readiness but is never a gap
+    assert "User research" in gaps
+
+
+def test_ai_usage_skill_is_labelled_ai_usage():
+    svc = _service()
+    role = _role()
+    cov = {s.skill_id: 0.0 for s in role.skills}
+    base = svc._readiness(role.skills, cov, 0.4)
+    bands = {g.skill: g.band for g in svc._rank_gaps(role.skills, cov, 0.4, base)}
+    assert bands["Use AI design tools"] == "ai_usage"
+    assert bands["User research"] == "role"

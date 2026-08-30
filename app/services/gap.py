@@ -4,9 +4,9 @@ A role skill is covered when the user has the exact ESCO skill (same skill_id) o
 whose embedding is at least gap_cosine_threshold similar - cosine is computed only between
 this role's skills and the user's skills, never the whole taxonomy, so a concrete CV skill
 (Java (Computer Programming)) covers the role's parent skill (Computer Programming).
-Readiness blends the two bands (role skills, AI/digital) by the role's AI-exposure, and
-the gap list is every uncovered skill ranked by readiness uplift (the UI highlights the
-top few and counts the rest). Nothing is stored.
+Readiness blends two groups by the role's AI-exposure: the role band (technical + soft +
+digital) and the AI-usage band. Gaps are the uncovered non-soft skills ranked by uplift;
+soft skills count toward readiness but are never listed as gaps. Nothing is stored.
 """
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ class GapService:
 
     # --------------------------------------------------------------- readiness
     def _readiness(self, role_skills, cov: dict[str, float], exposure_w: float) -> float:
-        role_band = [rs for rs in role_skills if rs.skill_type in ("technical", "soft")]
-        ai_band = [rs for rs in role_skills if rs.skill_type == "digital"]
+        role_band = [rs for rs in role_skills if rs.skill_type in ("technical", "soft", "digital")]
+        ai_band = [rs for rs in role_skills if rs.skill_type == "ai_usage"]
         role_cov = self._band_coverage(role_band, cov)
         ai_cov = self._band_coverage(ai_band, cov)
         return ((1 - exposure_w) * role_cov + exposure_w * ai_cov) * 100
@@ -88,8 +88,11 @@ class GapService:
         for rs in role_skills:
             if cov.get(rs.skill_id, 0.0) >= 1.0:
                 continue
+            if rs.skill_type == "soft":
+                # soft skills count toward readiness but are never listed as gaps
+                continue
             uplift = self._uplift(role_skills, cov, exposure_w, base, rs.skill_id)
-            band = "ai_digital" if rs.skill_type == "digital" else "role"
+            band = "ai_usage" if rs.skill_type == "ai_usage" else "role"
             gaps.append(
                 Gap(skill=rs.skill_name, band=band, importance=float(rs.importance), uplift=uplift)
             )
