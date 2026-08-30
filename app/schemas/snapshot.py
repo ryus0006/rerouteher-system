@@ -26,6 +26,7 @@ class SnapshotRequest(BaseModel):
 
 class ProfessionalSkill(BaseModel):
     skill: str
+    skill_id: str | None = None
     source: Literal["experience"] = "experience"
     evidence: str | None = None
 

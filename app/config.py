@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     occupation_confidence_threshold: float = 0.65
     skill_cosine_threshold: float = 0.55
+    # career-break (reframed) skills count toward a gap at this fraction of paid experience
+    break_skill_weight: float = 0.6
 
     ai_exposure_low: float = 0.2
     ai_exposure_medium: float = 0.4

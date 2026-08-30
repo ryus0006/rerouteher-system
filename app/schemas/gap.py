@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class UserSkill(BaseModel):
     skill: str
+    skill_id: str | None = None
     source: str | None = None
 
 

@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
     app.state.snapshot_service = SnapshotService(
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher
     )
-    app.state.gap_service = GapService(settings=settings)
+    app.state.gap_service = GapService(settings=settings, embedder=embedder)
 
     yield
 
