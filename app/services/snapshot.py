@@ -214,6 +214,11 @@ class SnapshotService:
                     continue
                 if preds:
                     per_title.append((preds[0].score, preds))
+                    top = preds[0]
+                    logger.info(
+                        "occupation model: title=%r -> esco=%s (%r) masco=%s score=%.3f method=%s",
+                        t, top.esco_code, top.esco_title, top.masco_code, top.score, top.method,
+                    )
 
             recent = next(((s, p) for s, p in per_title if s >= _OCCUPATION_TITLE_FLOOR), None)
             strongest = max(per_title, key=lambda x: x[0], default=None)
@@ -279,6 +284,11 @@ class SnapshotService:
             if role is None and m.masco_code:
                 role = await roles_repo.get_by_masco_code(session, m.masco_code)
             if role and role.role_id not in seen:
+                logger.info(
+                    "occupation resolve: esco=%s masco=%s score=%.3f -> role_id=%s title=%r role_masco=%s",
+                    getattr(m, "esco_code", None), m.masco_code, m.score,
+                    role.role_id, role.role_title, role.masco_code,
+                )
                 seen.add(role.role_id)
                 resolved.append((role, m.score))
         return resolved

@@ -6,11 +6,15 @@ the focus list is the top-3 uncovered skills by readiness uplift. Nothing is sto
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.repositories import roles as roles_repo
 from app.schemas.gap import Gap, GapRequest, GapResponse
+
+logger = logging.getLogger("rerouteher")
 
 
 class GapService:
@@ -21,6 +25,7 @@ class GapService:
         role = await roles_repo.get_role_with_skills(session, req.target_role)
         if role is None:
             # unknown target role: nothing to score against
+            logger.info("gap: target=%r resolved=None -> readiness=0.0", req.target_role)
             return GapResponse(readiness=0.0, skills_have=[], gaps=[])
 
         have_ids = {s.skill_id for s in req.skills if s.skill_id}
@@ -30,6 +35,11 @@ class GapService:
         readiness = self._readiness(role.skills, cov, exposure_w)
         skills_have = sorted({rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0})
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
+        logger.info(
+            "gap: target=%r -> role_id=%s role_skills=%d have_ids=%d overlap=%d readiness=%.1f",
+            req.target_role, role.role_id, len(role.skills), len(have_ids),
+            sum(1 for v in cov.values() if v >= 1.0), readiness,
+        )
         return GapResponse(readiness=round(readiness, 1), skills_have=skills_have, gaps=gaps)
 
     # --------------------------------------------------------------- readiness
