@@ -111,6 +111,33 @@ async def get_role_with_skills_by_id(session: AsyncSession, role_id: str) -> Rol
     return RoleWithSkills(role.role_id, role.role_title, role.ai_exposure, skills)
 
 
+async def best_similarity_for_role(
+    session: AsyncSession, role_id: str, user_skill_ids: list[str]
+) -> dict[str, float]:
+    """Per role skill, the max cosine similarity to any of the user's skills.
+
+    Bounded to this role's skills vs the given user skills only (never the whole taxonomy).
+    Returns skill_id -> best similarity; skills without an embedding are absent.
+    """
+    if not user_skill_ids:
+        return {}
+    rows = (
+        await session.execute(
+            text(
+                "SELECT rs.skill_id AS rid, "
+                "MAX(1 - (rt.embedding <=> ut.embedding)) AS best_sim "
+                "FROM role_skills rs "
+                "JOIN skill_taxonomy rt ON rt.skill_id = rs.skill_id "
+                "JOIN skill_taxonomy ut ON ut.skill_id = ANY(:uids) "
+                "WHERE rs.role_id = :rid "
+                "GROUP BY rs.skill_id"
+            ),
+            {"rid": role_id, "uids": user_skill_ids},
+        )
+    ).all()
+    return {str(r.rid): float(r.best_sim) for r in rows}
+
+
 async def nearest_by_embedding(
     session: AsyncSession, query_vec: np.ndarray, k: int
 ) -> list[NearestRole]:

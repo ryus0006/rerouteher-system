@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     occupation_confidence_threshold: float = 0.65
     skill_cosine_threshold: float = 0.55
+    # gap coverage: a role skill counts as covered when a user skill is at least this similar
+    gap_cosine_threshold: float = 0.75
 
     ai_exposure_low: float = 0.2
     ai_exposure_medium: float = 0.4

@@ -1,6 +1,9 @@
-"""Two-band skill-gap engine (exact skill_id match).
+"""Two-band skill-gap engine (exact skill_id + bounded embedding match).
 
-A role skill is covered only when the user has the exact ESCO skill (same skill_id).
+A role skill is covered when the user has the exact ESCO skill (same skill_id) or a skill
+whose embedding is at least gap_cosine_threshold similar - cosine is computed only between
+this role's skills and the user's skills, never the whole taxonomy, so a concrete CV skill
+(Java (Computer Programming)) covers the role's parent skill (Computer Programming).
 Readiness blends the two bands (role skills, AI/digital) by the role's AI-exposure, and
 the focus list is the top-3 uncovered skills by readiness uplift. Nothing is stored.
 """
@@ -32,16 +35,33 @@ class GapService:
             return GapResponse(readiness=0.0, skills_have=[], gaps=[])
 
         have_ids = {sid for sid in req.skill_ids if sid}
-        cov = {rs.skill_id: (1.0 if rs.skill_id in have_ids else 0.0) for rs in role.skills}
+        sims = await roles_repo.best_similarity_for_role(session, role.role_id, list(have_ids))
+        threshold = self._settings.gap_cosine_threshold
+
+        cov: dict[str, float] = {}
+        exact = embed = 0
+        for rs in role.skills:
+            if rs.skill_id in have_ids:
+                cov[rs.skill_id] = 1.0
+                exact += 1
+            elif sims.get(rs.skill_id, 0.0) >= threshold:
+                cov[rs.skill_id] = 1.0
+                embed += 1
+            else:
+                cov[rs.skill_id] = 0.0
 
         exposure_w = self._settings.ai_exposure_weight(role.ai_exposure)
         readiness = self._readiness(role.skills, cov, exposure_w)
         skills_have = sorted({rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0})
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
         logger.info(
-            "gap: target_id=%s (%r) -> role_id=%s role_skills=%d have_ids=%d overlap=%d readiness=%.1f",
+            "gap: target_id=%s (%r) -> role_id=%s role_skills=%d have_ids=%d exact=%d embed=%d readiness=%.1f",
             req.target_role_id, req.target_role, role.role_id, len(role.skills), len(have_ids),
-            sum(1 for v in cov.values() if v >= 1.0), readiness,
+            exact, embed, readiness,
+        )
+        logger.info(
+            "gap sims: %s",
+            [(rs.skill_name, round(sims.get(rs.skill_id, 0.0), 3)) for rs in role.skills],
         )
         return GapResponse(readiness=round(readiness, 1), skills_have=skills_have, gaps=gaps)
 
