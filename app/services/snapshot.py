@@ -171,7 +171,12 @@ class SnapshotService:
                 continue
             seen.add(key)
             reframed.append(
-                ReframedSkill(skill=row.reframed_label, source="break", from_activity=row.activity_id)
+                ReframedSkill(
+                    skill=row.reframed_label,
+                    skill_id=row.skill_id,
+                    source="break",
+                    from_activity=row.activity_id,
+                )
             )
         return reframed
 

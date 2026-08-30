@@ -33,6 +33,7 @@ class ProfessionalSkill(BaseModel):
 
 class ReframedSkill(BaseModel):
     skill: str
+    skill_id: str | None = None
     source: Literal["break"] = "break"
     from_activity: str | None = None
 
