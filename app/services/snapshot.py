@@ -34,6 +34,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"[.;•\n]+")
 _WORD_RE = re.compile(r"[a-z][a-z0-9+.#-]*")
 _MAX_SEMANTIC_SPANS = 20
 _MAX_PHRASE_WORDS = 4
+_MAX_SEMANTIC_SKILLS = 10
 
 
 def _phrase_set(text_lower: str, max_n: int = _MAX_PHRASE_WORDS) -> set[str]:
@@ -138,7 +139,9 @@ class SnapshotService:
             for m in matches:
                 if m.skill_id not in best or m.similarity > best[m.skill_id].similarity:
                     best[m.skill_id] = m
-        return list(best.values())
+        # keep only the strongest semantic matches so the dense taxonomy does not flood the list
+        ranked = sorted(best.values(), key=lambda m: m.similarity, reverse=True)
+        return ranked[:_MAX_SEMANTIC_SKILLS]
 
     # ------------------------------------------------------------- break reframe
     async def _reframe_break(
