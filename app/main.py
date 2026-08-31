@@ -19,6 +19,7 @@ from app.services.cv_extractor import CVExtractor
 from app.services.embedder import Embedder
 from app.services.gap import GapService
 from app.services.occupation_matcher import EscoTfidfMatcher
+from app.services.reranker import CrossEncoderReranker
 from app.services.snapshot import SnapshotService
 
 configure_logging()
@@ -41,6 +42,14 @@ async def lifespan(app: FastAPI):
     if tfidf_matcher is None:
         logger.warning("TF-IDF matcher not found at %s; Tier 1 occupation logging disabled", settings.tfidf_model_path)
 
+    # 2b. Occupation reranker (local cross-encoder). Downloaded from HF at first boot and
+    # cached; degrades to None (today's ordering) if no model in the ladder loads.
+    reranker = None
+    if settings.rerank_enabled:
+        reranker = CrossEncoderReranker.load(
+            settings.rerank_model_id_list, settings.rerank_cache_dir
+        )
+
     # 3. spaCy pipeline + alias dictionary.
     nlp = None
     alias_pairs: list[tuple[str, str]] = []
@@ -61,14 +70,15 @@ async def lifespan(app: FastAPI):
         nlp=nlp, skill_dictionary=skill_dictionary, embedder=embedder
     )
     app.state.snapshot_service = SnapshotService(
-        settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher
+        settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher, reranker=reranker
     )
     app.state.gap_service = GapService(settings=settings)
 
     logger.info(
-        "startup: embedder=%s tfidf=%s spacy=%s skill_dict=%d",
+        "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d",
         embedder is not None,
         tfidf_matcher is not None,
+        reranker.model_id if reranker else None,
         nlp is not None,
         len(skill_dictionary),
     )

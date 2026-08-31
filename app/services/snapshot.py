@@ -27,6 +27,7 @@ from app.schemas.snapshot import (
     SnapshotResponse,
 )
 from app.services.occupation_matcher import normalize_text
+from app.services.reranker import RerankCandidate
 
 logger = logging.getLogger("rerouteher")
 
@@ -52,10 +53,11 @@ def _phrase_set(text_lower: str, max_n: int = _MAX_PHRASE_WORDS) -> set[str]:
 
 
 class SnapshotService:
-    def __init__(self, settings: Settings, embedder, tfidf_matcher) -> None:
+    def __init__(self, settings: Settings, embedder, tfidf_matcher, reranker=None) -> None:
         self._settings = settings
         self._embedder = embedder  # may be None if the model is unavailable
         self._tfidf = tfidf_matcher  # ESCO TF-IDF matcher (Tier 1), may be None if the artifact is absent
+        self._reranker = reranker  # cross-encoder reranker, may be None if no model loaded
         # lazily loaded skill lookup (cached on this singleton instance)
         self._term_to_skill: dict[str, str] | None = None
         self._skill_to_canonical: dict[str, str] = {}
@@ -149,8 +151,10 @@ class SnapshotService:
         vectors = self._embedder.encode(spans)
         best: dict[str, skills_repo.SkillMatch] = {}
         for vec in vectors:
+            # k=1: one span yields at most its single nearest skill (multi-skill lines
+            # are already caught by the exact pass).
             matches = await skills_repo.match_by_embedding(
-                session, vec, k=3, threshold=self._settings.skill_cosine_threshold
+                session, vec, k=1, threshold=self._settings.skill_cosine_threshold
             )
             for m in matches:
                 if m.skill_id not in best or m.similarity > best[m.skill_id].similarity:
@@ -207,25 +211,20 @@ class SnapshotService:
             self._embedder.encode_one(emb_text) if (self._embedder is not None and emb_text) else None
         )
 
-        # Tier 1: classify each title, then pick the most recent job that clears the floor,
-        # unless another title scores decisively higher (margin) - that catches a mislabeled
-        # recent title while still defaulting to the last job held.
-        if self._tfidf is not None and (titles or skill_names):
-            per_title: list[tuple[float, list]] = []  # (top score, predictions) in CV order
-            for t in titles or [""]:
-                try:
-                    preds = self._tfidf.predict(job_title=t, skills=skill_names, top_k=5)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Tier 1 occupation matcher failed for %r: %s", t, exc)
-                    continue
-                if preds:
-                    per_title.append((preds[0].score, preds))
-                    top = preds[0]
-                    logger.info(
-                        "occupation model: title=%r -> esco=%s (%r) masco=%s score=%.3f method=%s",
-                        t, top.esco_code, top.esco_title, top.masco_code, top.score, top.method,
-                    )
+        # Gather Tier-1 predictions once; reused by the reranker pool and the fallback path.
+        per_title = self._gather_tier1(titles, skill_names)
 
+        # Preferred path: rerank a unified candidate pool (Tier-1 resolved + embedding kNN)
+        # with the context-aware cross-encoder. Falls through if disabled/unavailable/empty.
+        if self._reranker is not None and self._settings.rerank_enabled and (titles or skill_names):
+            reranked = await self._rerank_pool(per_title, profile_vec, titles, skill_names, session)
+            if reranked:
+                return reranked
+
+        # Tier 1: pick the most recent job that clears the floor, unless another title scores
+        # decisively higher (margin) - catches a mislabeled recent title while still defaulting
+        # to the last job held.
+        if per_title:
             recent = next(((s, p) for s, p in per_title if s >= _OCCUPATION_TITLE_FLOOR), None)
             strongest = max(per_title, key=lambda x: x[0], default=None)
             if recent is None:
@@ -286,6 +285,75 @@ class SnapshotService:
                     RecommendedRole(role=r.role_title, role_id=r.role_id, similarity=round(r.similarity, 3))
                 )
                 seen_ids.add(r.role_id)
+        return previous, recommended
+
+    def _gather_tier1(self, titles: list[str], skill_names: list[str]):
+        """Classify each title once. Returns [(top_score, predictions)] in CV order,
+        or [] when the matcher is absent. Reused by the reranker and the fallback."""
+        if self._tfidf is None or not (titles or skill_names):
+            return []
+        per_title: list[tuple[float, list]] = []
+        for t in titles or [""]:
+            try:
+                preds = self._tfidf.predict(job_title=t, skills=skill_names, top_k=5)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Tier 1 occupation matcher failed for %r: %s", t, exc)
+                continue
+            if preds:
+                per_title.append((preds[0].score, preds))
+                top = preds[0]
+                logger.info(
+                    "occupation model: title=%r -> esco=%s (%r) masco=%s score=%.3f method=%s",
+                    t, top.esco_code, top.esco_title, top.masco_code, top.score, top.method,
+                )
+        return per_title
+
+    async def _rerank_pool(self, per_title, profile_vec, titles, skill_names, session):
+        """Rank a unified candidate pool (Tier-1 resolved roles + embedding kNN) with the
+        cross-encoder. Returns (previous_occupation, recommended) or None to fall through.
+        The query is title + skills only - no raw CV text, so no PII is scored."""
+        pool: dict[str, object] = {}
+        # 1. every Tier-1 prediction resolved to a role
+        for _score, preds in per_title:
+            for role, _s in await self._roles_from_matches(preds, session):
+                pool.setdefault(role.role_id, role)
+        # 2. nearest roles by embedding
+        if profile_vec is not None:
+            for r in await roles_repo.nearest_by_embedding(
+                session, profile_vec, k=self._settings.rerank_candidate_pool
+            ):
+                pool.setdefault(r.role_id, r)
+        if not pool:
+            return None
+
+        pool_ids = list(pool)[: self._settings.rerank_candidate_pool]
+        texts = await roles_repo.get_rerank_texts(session, pool_ids)
+        candidates = [RerankCandidate(rid, texts[rid]) for rid in pool_ids if rid in texts]
+        if not candidates:
+            return None
+
+        recent_title = titles[0] if titles else ""
+        query = f"{recent_title}. skills: {', '.join(skill_names)}".strip()
+        ranked = self._reranker.rerank(query, candidates)[: self._settings.rerank_top_k]
+        if not ranked:
+            return None
+
+        top = ranked[0]
+        top_role = pool[top.role_id]
+        previous = PreviousOccupation(
+            role=top_role.role_title, role_id=top_role.role_id,
+            confidence=round(top.score, 3), method="reranker",
+        )
+        recommended = [
+            RecommendedRole(
+                role=pool[x.role_id].role_title, role_id=x.role_id, similarity=round(x.score, 3)
+            )
+            for x in ranked
+        ]
+        logger.info(
+            "occupation reranked (%s): %s",
+            self._reranker.model_id, [(r.role, r.similarity) for r in recommended],
+        )
         return previous, recommended
 
     @staticmethod

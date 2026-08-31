@@ -160,6 +160,63 @@ async def test_normalization_reaches_tier1():
     assert matcher.calls[0]["job_title"] == "human resources manager"
 
 
+class FakeReranker:
+    """Ranks by a fixed preference over role_ids; records the query it saw."""
+
+    def __init__(self, preferred_order):
+        self.preferred = preferred_order
+        self.query_seen = None
+        self.model_id = "fake-reranker"
+
+    def rerank(self, query, candidates):
+        from app.services.reranker import RerankResult
+
+        self.query_seen = query
+
+        def score(c):
+            if c.role_id in self.preferred:
+                return 1.0 - self.preferred.index(c.role_id) / 100
+            return 0.01
+
+        return sorted(
+            (RerankResult(c.role_id, score(c)) for c in candidates),
+            key=lambda r: r.score,
+            reverse=True,
+        )
+
+
+async def test_reranker_reorders_recommendations_and_sets_method(monkeypatch):
+    async def _texts(session, ids):
+        labels = {
+            "r_mkt": "Marketing Manager", "r1": "Project Coordinator",
+            "r2": "Operations Executive", "r3": "Admin Executive", "r4": "HR Coordinator",
+        }
+        return {i: f"{labels.get(i, i)}. does stuff" for i in ids}
+
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts)
+
+    reranker = FakeReranker(preferred_order=["r2", "r_mkt"])
+    svc = SnapshotService(
+        Settings(), embedder=FakeEmbedder(), tfidf_matcher=FakeMatcher(), reranker=reranker
+    )
+    resp = await svc.generate(_request(), session=object())
+
+    assert resp.previous_occupation.method == "reranker"
+    assert resp.recommended_roles[0].role_id == "r2"
+    assert resp.recommended_roles[0].role == "Operations Executive"
+    assert 0.0 <= resp.recommended_roles[0].similarity <= 1.0
+    assert reranker.query_seen and "skills:" in reranker.query_seen
+    assert "Led project" not in reranker.query_seen  # raw CV text (PII surface) not sent
+
+
+async def test_no_reranker_falls_back_to_existing_order():
+    svc = SnapshotService(
+        Settings(), embedder=FakeEmbedder(), tfidf_matcher=FakeMatcher(), reranker=None
+    )
+    resp = await svc.generate(_request(), session=object())
+    assert resp.previous_occupation.method in ("classifier", "embedding")
+
+
 async def test_reframe_dedupes():
     svc = SnapshotService(Settings(), embedder=None, tfidf_matcher=None)
     resp = await svc.generate(_request(), session=object())

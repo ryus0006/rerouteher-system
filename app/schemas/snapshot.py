@@ -42,7 +42,7 @@ class PreviousOccupation(BaseModel):
     role: str
     role_id: str
     confidence: float
-    method: Literal["classifier", "embedding"]
+    method: Literal["classifier", "embedding", "reranker"]
 
 
 class RecommendedRole(BaseModel):

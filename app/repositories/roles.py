@@ -138,6 +138,32 @@ async def best_similarity_for_role(
     return {str(r.rid): float(r.best_sim) for r in rows}
 
 
+async def get_rerank_texts(session: AsyncSession, role_ids: list[str]) -> dict[str, str]:
+    """role_id -> short text for reranking: title + first slice of the summary.
+
+    Bounded to the given ids only. Absent summary -> title alone.
+    """
+    if not role_ids:
+        return {}
+    rows = (
+        await session.execute(
+            text(
+                "SELECT role_id, role_title, "
+                "trim(role_title || '. ' || "
+                "left(COALESCE(NULLIF(task_summary, ''), occupation_description, ''), 300)) "
+                "AS rerank_text "
+                "FROM roles WHERE role_id = ANY(:ids)"
+            ),
+            {"ids": role_ids},
+        )
+    ).all()
+    out: dict[str, str] = {}
+    for r in rows:
+        text_val = (r.rerank_text or "").strip().rstrip(".").strip()
+        out[str(r.role_id)] = text_val or r.role_title
+    return out
+
+
 async def nearest_by_embedding(
     session: AsyncSession, query_vec: np.ndarray, k: int
 ) -> list[NearestRole]:
