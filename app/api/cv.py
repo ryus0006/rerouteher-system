@@ -1,4 +1,5 @@
 """POST /api/cv/parse."""
+import anyio
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -22,7 +23,8 @@ async def parse_cv(request: Request, file: UploadFile = File(...)):
 
     extractor = request.app.state.cv_extractor
     try:
-        cv = extractor.parse(data)
+        # PDF parsing + NLP is CPU-bound; run it off the event loop.
+        cv = await anyio.to_thread.run_sync(extractor.parse, data)
     except UnreadableCVError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 

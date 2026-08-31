@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     try:
         embedder = Embedder(settings.embedding_model)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Embedder not loaded (%s); snapshot semantic match disabled", exc)
+        logger.warning("Embedder not loaded (%s); snapshot semantic match disabled", exc, exc_info=True)
 
     # 2. ESCO TF-IDF matcher (Tier 1, logged). None if the artifact is absent.
     tfidf_matcher = EscoTfidfMatcher.load(settings.tfidf_model_path)
@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
         async with SessionLocal() as session:
             alias_pairs = await skills_repo.load_alias_dictionary(session)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("spaCy/alias dictionary not loaded (%s); CV parsing degraded", exc)
+        logger.warning("spaCy/alias dictionary not loaded (%s); CV parsing degraded", exc, exc_info=True)
 
     skill_dictionary = sorted({term for _, term in alias_pairs})
 

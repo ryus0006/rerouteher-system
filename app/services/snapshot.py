@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import re
 
+import anyio
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -148,7 +150,7 @@ class SnapshotService:
         if not spans:
             return []
 
-        vectors = self._embedder.encode(spans)
+        vectors = await anyio.to_thread.run_sync(self._embedder.encode, spans)
         best: dict[str, skills_repo.SkillMatch] = {}
         for vec in vectors:
             # k=1: one span yields at most its single nearest skill (multi-skill lines
@@ -207,12 +209,16 @@ class SnapshotService:
 
         # profile embedding: tops up the classifier recommendations and drives the Tier 2 fallback
         emb_text = self._embedding_text(" ".join(titles), skill_names)
-        profile_vec = (
-            self._embedder.encode_one(emb_text) if (self._embedder is not None and emb_text) else None
-        )
+        if self._embedder is not None and emb_text:
+            profile_vec = await anyio.to_thread.run_sync(self._embedder.encode_one, emb_text)
+        else:
+            profile_vec = None
+        # log only the derived model inputs (titles + skills), never the raw CV text
+        logger.info("occupation inputs: titles=%s skills=%s", titles, skill_names)
 
         # Gather Tier-1 predictions once; reused by the reranker pool and the fallback path.
-        per_title = self._gather_tier1(titles, skill_names)
+        # The classifier is CPU-bound, so run it off the event loop.
+        per_title = await anyio.to_thread.run_sync(self._gather_tier1, titles, skill_names)
 
         # Preferred path: rerank a unified candidate pool (Tier-1 resolved + embedding kNN)
         # with the context-aware cross-encoder. Falls through if disabled/unavailable/empty.
@@ -297,7 +303,7 @@ class SnapshotService:
             try:
                 preds = self._tfidf.predict(job_title=t, skills=skill_names, top_k=5)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Tier 1 occupation matcher failed for %r: %s", t, exc)
+                logger.warning("Tier 1 occupation matcher failed for %r: %s", t, exc, exc_info=True)
                 continue
             if preds:
                 per_title.append((preds[0].score, preds))
@@ -334,7 +340,9 @@ class SnapshotService:
 
         recent_title = titles[0] if titles else ""
         query = f"{recent_title}. skills: {', '.join(skill_names)}".strip()
-        ranked = self._reranker.rerank(query, candidates)[: self._settings.rerank_top_k]
+        logger.info("rerank inputs: query=%r candidates=%d", query, len(candidates))
+        ranked_all = await anyio.to_thread.run_sync(self._reranker.rerank, query, candidates)
+        ranked = ranked_all[: self._settings.rerank_top_k]
         if not ranked:
             return None
 

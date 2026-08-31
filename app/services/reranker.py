@@ -53,7 +53,7 @@ class CrossEncoderReranker:
                 logger.info("reranker loaded: %s", model_id)
                 return cls(model, model_id)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("reranker %s failed to load (%s); trying next", model_id, exc)
+                logger.warning("reranker %s failed to load (%s); trying next", model_id, exc, exc_info=True)
         logger.warning("no reranker model could be loaded; occupation reranking disabled")
         return None
 
