@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     occupation_confidence_threshold: float = 0.65
     skill_cosine_threshold: float = 0.63
+    # candidates retrieved per CV span before the cross-encoder re-ranks them by definition
+    skill_candidate_k: int = 5
     # gap coverage: a role skill counts as covered when a user skill is at least this similar
     gap_cosine_threshold: float = 0.50
 

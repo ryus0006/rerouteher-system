@@ -152,17 +152,33 @@ class SnapshotService:
 
         vectors = await anyio.to_thread.run_sync(self._embedder.encode, spans)
         best: dict[str, skills_repo.SkillMatch] = {}
-        for vec in vectors:
-            # k=1: one span yields at most its single nearest skill (multi-skill lines
-            # are already caught by the exact pass).
-            matches = await skills_repo.match_by_embedding(
-                session, vec, k=1, threshold=self._settings.skill_cosine_threshold
+        for span, vec in zip(spans, vectors):
+            # bi-encoder retrieves candidates (keeps the cosine floor so "no match ->
+            # no skill" holds); the cross-encoder then picks the best one in context.
+            candidates = await skills_repo.match_by_embedding(
+                session, vec, k=self._settings.skill_candidate_k,
+                threshold=self._settings.skill_cosine_threshold,
             )
-            for m in matches:
-                if m.skill_id not in best or m.similarity > best[m.skill_id].similarity:
-                    best[m.skill_id] = m
+            top = await self._best_skill_for_span(span, candidates)
+            if top and (top.skill_id not in best or top.similarity > best[top.skill_id].similarity):
+                best[top.skill_id] = top
         # strongest first, so the UI can show the most relevant skills at the top
         return sorted(best.values(), key=lambda m: m.similarity, reverse=True)
+
+    async def _best_skill_for_span(self, span, candidates):
+        """One skill per span. With the cross-encoder, re-rank the bi-encoder candidates
+        by their definition and take the top - the bi-encoder alone confuses a name with
+        a near-neighbour (e.g. XQuery for a SQL span). Degrades to the nearest by cosine."""
+        if not candidates:
+            return None
+        if self._reranker is None:
+            return candidates[0]
+        pairs = [RerankCandidate(c.skill_id, c.definition or c.canonical_name) for c in candidates]
+        ranked = await anyio.to_thread.run_sync(self._reranker.rerank, span, pairs)
+        if not ranked:
+            return candidates[0]
+        by_id = {c.skill_id: c for c in candidates}
+        return by_id[ranked[0].role_id]
 
     # ------------------------------------------------------------- break reframe
     async def _reframe_break(

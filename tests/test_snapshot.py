@@ -209,6 +209,40 @@ async def test_reranker_reorders_recommendations_and_sets_method(monkeypatch):
     assert "Led project" not in reranker.query_seen  # raw CV text (PII surface) not sent
 
 
+async def test_semantic_pass_reranks_candidates_by_definition(monkeypatch):
+    # bi-encoder returns a near-neighbour (XQuery) ranked above the true skill (SQL)
+    async def _two(session, vec, k, threshold):
+        return [
+            SkillMatch("s_xq", "XQuery", 0.70, "querying and transforming XML documents"),
+            SkillMatch("s_sql", "SQL", 0.66, "retrieval of information from a database"),
+        ]
+
+    async def _texts(session, ids):
+        return {i: f"role {i}" for i in ids}
+
+    monkeypatch.setattr(skills_repo, "match_by_embedding", _two)
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts)
+
+    class PickSQL:
+        model_id = "fake"
+
+        def rerank(self, query, candidates):
+            from app.services.reranker import RerankResult
+
+            order = {"s_sql": 0.9, "s_xq": 0.1}
+            return sorted(
+                (RerankResult(c.role_id, order.get(c.role_id, 0.0)) for c in candidates),
+                key=lambda r: r.score,
+                reverse=True,
+            )
+
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None, reranker=PickSQL())
+    resp = await svc.generate(_request(), session=object())
+    names = {p.skill for p in resp.professional_skills}
+    assert "SQL" in names          # cross-encoder promoted the true skill
+    assert "XQuery" not in names   # near-neighbour dropped: only top-1 per span kept
+
+
 async def test_no_reranker_falls_back_to_existing_order():
     svc = SnapshotService(
         Settings(), embedder=FakeEmbedder(), tfidf_matcher=FakeMatcher(), reranker=None

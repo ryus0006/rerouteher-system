@@ -13,6 +13,7 @@ class SkillMatch:
     skill_id: str
     canonical_name: str
     similarity: float
+    definition: str = ""  # ESCO description, used to re-rank candidates in context
 
 
 @dataclass
@@ -52,7 +53,7 @@ async def match_by_embedding(
     rows = (
         await session.execute(
             text(
-                "SELECT skill_id, canonical_name, "
+                "SELECT skill_id, canonical_name, COALESCE(definition, '') AS definition, "
                 "1 - (embedding <=> CAST(:v AS vector)) AS similarity "
                 "FROM skill_taxonomy "
                 "ORDER BY embedding <=> CAST(:v AS vector) LIMIT :k"
@@ -61,7 +62,7 @@ async def match_by_embedding(
         )
     ).all()
     return [
-        SkillMatch(r.skill_id, r.canonical_name, float(r.similarity))
+        SkillMatch(r.skill_id, r.canonical_name, float(r.similarity), r.definition)
         for r in rows
         if float(r.similarity) >= threshold
     ]
