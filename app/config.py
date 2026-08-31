@@ -20,16 +20,12 @@ class Settings(BaseSettings):
     # gap coverage: a role skill counts as covered when a user skill is at least this similar
     gap_cosine_threshold: float = 0.50
 
-    # Occupation reranker (local cross-encoder). Models are downloaded from
-    # HuggingFace at first boot and cached; nothing large is committed to Git.
-    # Best-first ladder: the first id that loads wins (steps down if memory is tight).
+    # Occupation reranker (local cross-encoder). Vendored under models/ and loaded
+    # from disk offline, like the embedder (the deploy image sets HF_HUB_OFFLINE=1).
+    # Comma-separated paths tried in order; the first that loads wins.
     rerank_enabled: bool = True
-    rerank_model_ids: str = (
-        "cross-encoder/ms-marco-MiniLM-L6-v2,"
-        "cross-encoder/ms-marco-MiniLM-L4-v2,"
-        "cross-encoder/ms-marco-MiniLM-L2-v2"
-    )
-    rerank_cache_dir: str | None = None  # None -> default HF cache (HF_HOME)
+    rerank_model_ids: str = "models/ms-marco-MiniLM-L6-v2"
+    rerank_cache_dir: str | None = None  # unused for local paths; kept for override
     rerank_candidate_pool: int = 15
     rerank_top_k: int = 3
 

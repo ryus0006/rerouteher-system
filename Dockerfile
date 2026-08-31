@@ -22,8 +22,9 @@ RUN pip install --upgrade pip \
 # spaCy English model (fetched from spaCy's own release, not Hugging Face).
 RUN python -m spacy download en_core_web_sm
 
-# Vendored embedding model (checked into the repo, ~87MB). Copied straight in, so the
-# build performs no Hugging Face download and startup loads it from this path.
+# Vendored models (checked into the repo): all-MiniLM-L6-v2 embedder (~87MB) and the
+# ms-marco-MiniLM-L6-v2 cross-encoder reranker (~87MB). Copied straight in, so the
+# build performs no Hugging Face download and startup loads them from these paths.
 COPY models ./models
 
 # Vendored TF-IDF occupation classifier (~25MB). Baked in so Tier 1 works on hosts
@@ -40,5 +41,5 @@ USER 3000
 # Network interface (8080; 8000 is taken by Coolify on the host).
 EXPOSE 8080
 
-# --no-access-log: the RequestLoggingMiddleware logs richer per-request info (bodies).
+# --no-access-log: the RequestLoggingMiddleware logs method/path/status/duration itself.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]
