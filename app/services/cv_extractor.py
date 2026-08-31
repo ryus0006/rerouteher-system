@@ -9,12 +9,15 @@ Pipeline:
 """
 from __future__ import annotations
 
+import logging
 import re
 
 import numpy as np
 import pymupdf  # PyMuPDF (the modern import; `fitz` is deprecated)
 
 from app.schemas.cv import CV, Experience
+
+logger = logging.getLogger("rerouteher")
 
 
 class UnreadableCVError(Exception):
@@ -266,18 +269,21 @@ class CVExtractor:
         # title: prefer the text on the dated line (many CVs write "DATE : Title" or
         # "Title  DATE"), which is the actual role; otherwise the first non-org line.
         title = None
+        title_source = None
         for raw in entry:
             if _DATE_RANGE_RE.search(raw):
                 residual = _DATE_RANGE_RE.sub("", raw).strip(" -–—|,:()[]{}\t")
                 has_words = re.search(r"[A-Za-z]", residual) is not None
                 if has_words and (organisation is None or residual.lower() != organisation.lower()):
                     title = residual
+                    title_source = "dated_line"
                 break
         if title is None:
             for line in clean_lines:
                 if organisation and line.lower() == organisation.lower():
                     continue
                 title = line
+                title_source = "first_non_org_line"
                 break
 
         # organisation fallback: the next content line after the title
@@ -293,6 +299,14 @@ class CVExtractor:
             if line != title and (organisation is None or line.lower() != organisation.lower())
         ]
         description = " ".join(described).strip() or None
+        # Diagnostic: how each entry was segmented, so title mislabels (a company/location
+        # line or a career-break bullet promoted to a title) and the branch that chose them
+        # are visible. spacy_org=None means NER found no organisation for this entry.
+        logger.info(
+            "cv segment: title=%r (via %s) org=%r dates=%s->%s | entry_lines=%s",
+            title, title_source, organisation, start, end,
+            [ln.strip() for ln in entry][:6],
+        )
         return Experience(
             title=title,
             organisation=organisation,

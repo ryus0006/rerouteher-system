@@ -129,7 +129,16 @@ class SnapshotService:
                     ),
                 )
 
-        return list(found.values())
+        skills = list(found.values())
+        # Diagnostic: the final accepted skills with the evidence that admitted each, so the
+        # pass responsible for a noise skill is clear ("semantic match" = semantic pass;
+        # a literal term = exact/mentions pass).
+        logger.info(
+            "skills extracted: total=%d | %s",
+            len(skills),
+            [(p.skill, p.evidence) for p in skills],
+        )
+        return skills
 
     def _professional(self, skill_id: str, evidence: str) -> ProfessionalSkill:
         return ProfessionalSkill(
@@ -178,7 +187,19 @@ class SnapshotService:
         if not ranked:
             return candidates[0]
         by_id = {c.skill_id: c for c in candidates}
-        return by_id[ranked[0].role_id]
+        chosen = by_id[ranked[0].role_id]
+        # Diagnostic: which span produced which skill, with both scores, so semantic-pass
+        # false positives (e.g. "create gis reports" from a plain sentence) and a sensible
+        # rerank floor are visible. cosine = bi-encoder retrieval, rerank = cross-encoder.
+        logger.info(
+            "skill semantic: span=%r -> %s (cosine=%.3f rerank=%.3f) | candidates=%s",
+            span[:90], chosen.canonical_name, chosen.similarity, ranked[0].score,
+            [
+                (by_id[r.role_id].canonical_name, round(by_id[r.role_id].similarity, 3), round(r.score, 3))
+                for r in ranked
+            ],
+        )
+        return chosen
 
     # ------------------------------------------------------------- break reframe
     async def _reframe_break(
