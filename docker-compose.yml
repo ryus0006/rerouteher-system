@@ -9,9 +9,10 @@ services:
       - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # runs on first init only, alphabetical order: import then pgvector migration
+      # runs on first init only, alphabetical order: import, pgvector migration, account store
       - ./db/00_import.sql:/docker-entrypoint-initdb.d/00_import.sql:ro
       - ./db/01_pgvector_migrate.sql:/docker-entrypoint-initdb.d/01_pgvector_migrate.sql:ro
+      - ./db/02_account_store.sql:/docker-entrypoint-initdb.d/02_account_store.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d rerouteher"]
       interval: 5s
