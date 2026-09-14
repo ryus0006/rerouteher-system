@@ -40,7 +40,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/rerouteher}
       # Set in the Coolify UI (api resource -> Environment Variables) for production.
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:5174}
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:

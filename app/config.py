@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/rerouteher"
-    cors_origins: str = "http://localhost:5173"
+    # Iteration 2 UI runs on 5174; 5173 kept so iteration 1 UI can also reach it.
+    cors_origins: str = "http://localhost:5173,http://localhost:5174"
 
     # Local vendored model directory (checked into the repo). Loaded by path so there
     # is no Hugging Face Hub lookup at startup.
