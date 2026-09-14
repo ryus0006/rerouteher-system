@@ -4,17 +4,20 @@ Models and reference-derived assets load once at startup (lifespan) and live on
 app.state so requests have no cold start. Model loading is resilient: if an ML asset
 is missing, the app still boots and the affected endpoint degrades at call time.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import cv, gap, snapshot
+from app.api import account, cv, gap, snapshot
 from app.config import get_settings
 from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.db import SessionLocal
 from app.repositories import skills as skills_repo
+from app.services.account import AccountService
 from app.services.cv_extractor import CVExtractor
 from app.services.embedder import Embedder
 from app.services.gap import GapService
@@ -52,15 +55,26 @@ async def lifespan(app: FastAPI):
 
     # 3. spaCy pipeline + alias dictionary.
     nlp = None
-    alias_pairs: list[tuple[str, str]] = []
     try:
         import spacy
 
         nlp = spacy.load("en_core_web_sm")
-        async with SessionLocal() as session:
-            alias_pairs = await skills_repo.load_alias_dictionary(session)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("spaCy/alias dictionary not loaded (%s); CV parsing degraded", exc, exc_info=True)
+        logger.warning("spaCy not loaded (%s); CV parsing degraded", exc, exc_info=True)
+
+    # The database can still be finishing its own startup when the app boots, so retry
+    # this one read rather than degrade to an empty alias dictionary on a transient miss.
+    alias_pairs: list[tuple[str, str]] = []
+    for attempt in range(1, 11):
+        try:
+            async with SessionLocal() as session:
+                alias_pairs = await skills_repo.load_alias_dictionary(session)
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 10:
+                logger.warning("alias dictionary not loaded after retries (%s); CV parsing degraded", exc)
+            else:
+                await asyncio.sleep(2)
 
     skill_dictionary = sorted({term for _, term in alias_pairs})
 
@@ -90,19 +104,33 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="ReRouteHer API", version="0.1.0", lifespan=lifespan)
 
-    # Allow the browser client to call the API directly.
+    # Allow the browser client to call the API directly. Credentials are on so the
+    # session cookie set by the account endpoints rides with subsequent requests.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    # Signed session cookie carries the signed-in username (E5).
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret,
+        https_only=settings.session_https_only,
+        same_site=settings.session_same_site,
+    )
+
     app.add_middleware(RequestLoggingMiddleware)
+
+    # Stateless service, so it is wired here rather than in lifespan.
+    app.state.account_service = AccountService()
 
     app.include_router(cv.router)
     app.include_router(snapshot.router)
     app.include_router(gap.router)
+    app.include_router(account.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health():

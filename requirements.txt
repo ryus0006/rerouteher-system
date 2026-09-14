@@ -5,6 +5,7 @@ pydantic-settings
 sqlalchemy[asyncio]>=2
 asyncpg
 bcrypt
+itsdangerous
 python-multipart
 pymupdf
 spacy

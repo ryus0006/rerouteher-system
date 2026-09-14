@@ -1,6 +1,7 @@
 services:
   db:
-    image: pgvector/pgvector:pg16
+    # pg18 to match the db team's dump (pg_dump 18); pgvector provides vector(384).
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -8,16 +9,27 @@ services:
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      # runs on first init only, alphabetical order: import, pgvector migration, account store
-      - ./db/00_import.sql:/docker-entrypoint-initdb.d/00_import.sql:ro
-      - ./db/01_pgvector_migrate.sql:/docker-entrypoint-initdb.d/01_pgvector_migrate.sql:ro
-      - ./db/02_account_store.sql:/docker-entrypoint-initdb.d/02_account_store.sql:ro
+      # pg18 images store data under /var/lib/postgresql (version subdir), not /data.
+      - pgdata:/var/lib/postgresql
+      # runs on first init only, in order: bootstrap (extension + schema), db-team base
+      # schema, db-team data, then our E5 account model change (for db-team review).
+      - ./db/00_init_extensions_schemas.sql:/docker-entrypoint-initdb.d/00_init_extensions_schemas.sql:ro
+      - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/02_data.sql:/docker-entrypoint-initdb.d/02_data.sql:ro
+      - ./db/03_e5_account_model.sql:/docker-entrypoint-initdb.d/03_e5_account_model.sql:ro
+      - ./db/04_finalize.sql:/docker-entrypoint-initdb.d/04_finalize.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d rerouteher"]
+      # -h localhost forces a TCP probe. The image runs a temporary socket-only server
+      # while it loads the init scripts; a plain pg_isready would report healthy during
+      # that phase and the API would start mid-restart (Connection refused). Requiring
+      # TCP means "healthy" only fires once the real server accepts connections.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U postgres -d rerouteher"]
       interval: 5s
       timeout: 5s
       retries: 10
+      # First init loads the 333MB dump before accepting connections; give it room
+      # so a slow import is not counted as unhealthy.
+      start_period: 600s
 
   api:
     build: .
@@ -27,7 +39,7 @@ services:
       # Set in the Coolify UI (api resource -> Environment Variables) for production.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     volumes:
       # TF-IDF occupation model lives outside the image (produced by the data team)
       - ./ml:/app/ml:ro
