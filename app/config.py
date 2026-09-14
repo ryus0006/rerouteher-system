@@ -37,6 +37,12 @@ class Settings(BaseSettings):
 
     max_cv_bytes: int = 10 * 1024 * 1024
 
+    # Session cookie (Starlette SessionMiddleware). SESSION_SECRET signs the cookie;
+    # set a strong random value in every deployed environment.
+    session_secret: str = "dev-insecure-change-me"
+    session_https_only: bool = False  # True behind HTTPS in production
+    session_same_site: str = "lax"  # "none" (with https_only) for cross-site prod
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
