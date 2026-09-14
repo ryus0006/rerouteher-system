@@ -72,3 +72,15 @@ def test_ai_usage_skill_is_labelled_ai_usage():
     bands = {g.skill: g.band for g in svc._rank_gaps(role.skills, cov, 0.4, base)}
     assert bands["Use AI design tools"] == "ai_usage"
     assert bands["User research"] == "role"
+
+
+def test_ranked_gaps_carry_skill_id():
+    svc = _service()
+    role = _role()
+    # s1 (User research) uncovered -> must appear as a gap carrying its skill_id
+    cov = {s.skill_id: (0.0 if s.skill_id == "s1" else 1.0) for s in role.skills}
+    base = svc._readiness(role.skills, cov, 0.4)
+    gaps = svc._rank_gaps(role.skills, cov, 0.4, base)
+    by_id = {g.skill_id: g for g in gaps}
+    assert "s1" in by_id
+    assert by_id["s1"].skill == "User research"

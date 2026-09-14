@@ -94,7 +94,13 @@ class GapService:
             uplift = self._uplift(role_skills, cov, exposure_w, base, rs.skill_id)
             band = "ai_usage" if rs.skill_type == "ai_usage" else "role"
             gaps.append(
-                Gap(skill=rs.skill_name, band=band, importance=float(rs.importance), uplift=uplift)
+                Gap(
+                    skill_id=rs.skill_id,
+                    skill=rs.skill_name,
+                    band=band,
+                    importance=float(rs.importance),
+                    uplift=uplift,
+                )
             )
         gaps.sort(key=lambda g: (g.uplift, g.importance), reverse=True)
         return gaps

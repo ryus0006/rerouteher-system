@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import account, cv, gap, snapshot
+from app.api import account, cv, gap, learning, snapshot
 from app.config import get_settings
 from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.db import SessionLocal
@@ -21,6 +21,7 @@ from app.services.account import AccountService
 from app.services.cv_extractor import CVExtractor
 from app.services.embedder import Embedder
 from app.services.gap import GapService
+from app.services.learning import LearningService
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.reranker import CrossEncoderReranker
 from app.services.snapshot import SnapshotService
@@ -126,11 +127,13 @@ def create_app() -> FastAPI:
 
     # Stateless service, so it is wired here rather than in lifespan.
     app.state.account_service = AccountService()
+    app.state.learning_service = LearningService()
 
     app.include_router(cv.router)
     app.include_router(snapshot.router)
     app.include_router(gap.router)
     app.include_router(account.router)
+    app.include_router(learning.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health():
