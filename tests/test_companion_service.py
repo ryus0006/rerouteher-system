@@ -2,6 +2,7 @@ import pytest
 
 from app.schemas.companion import AskRequest
 from app.services.companion import CompanionService
+from app.services.llm import GenerateResult
 
 pytestmark = pytest.mark.asyncio
 
@@ -13,12 +14,21 @@ class FakeRepo:
     async def load_recent(self, session, session_id, limit=10):
         return []
 
-    async def save_turn(self, session, session_id, username, role, content):
-        self.saved.append((session_id, username, role, content))
+    async def save_turn(self, session, session_id, username, role, content, tokens_in=0, tokens_out=0):
+        self.saved.append(
+            {
+                "session_id": session_id,
+                "username": username,
+                "role": role,
+                "content": content,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }
+        )
 
 
 class ScriptedLlm:
-    """Returns queued candidate-content dicts, one per generate() call."""
+    """Returns queued GenerateResults, one per generate() call."""
 
     def __init__(self, responses):
         self._responses = list(responses)
@@ -29,12 +39,20 @@ class ScriptedLlm:
         return self._responses.pop(0)
 
 
-def _text(t):
-    return {"role": "model", "parts": [{"text": t}]}
+def _text(t, tokens_in=0, tokens_out=0):
+    return GenerateResult(
+        content={"role": "model", "parts": [{"text": t}]},
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+    )
 
 
-def _fn(name, args):
-    return {"role": "model", "parts": [{"functionCall": {"name": name, "args": args}}]}
+def _fn(name, args, tokens_in=0, tokens_out=0):
+    return GenerateResult(
+        content={"role": "model", "parts": [{"functionCall": {"name": name, "args": args}}]},
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+    )
 
 
 async def test_plain_answer_saves_two_turns():
@@ -43,7 +61,7 @@ async def test_plain_answer_saves_two_turns():
     resp = await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
     assert resp.answer == "Tell me about your last job."
     assert resp.journey_update is None
-    assert [r[2] for r in repo.saved] == ["user", "assistant"]
+    assert [r["role"] for r in repo.saved] == ["user", "assistant"]
 
 
 async def test_update_profile_tool_becomes_journey_update():
@@ -63,7 +81,24 @@ async def test_update_profile_tool_becomes_journey_update():
     assert resp.journey_update.cv.skill_mentions == ["seo"]
     assert resp.journey_update.break_.activities == ["caregiving"]
     assert len(llm.calls) == 2  # tool round-trip
-    assert repo.saved[0][1] == "aisha"
+    assert repo.saved[0]["username"] == "aisha"
+
+
+async def test_token_usage_summed_across_calls_and_recorded_on_answer():
+    repo = FakeRepo()
+    llm = ScriptedLlm(
+        [
+            _fn("update_profile", {"cv": {"raw_text": "x"}}, tokens_in=100, tokens_out=20),
+            _text("Saved.", tokens_in=130, tokens_out=15),
+        ]
+    )
+    svc = CompanionService(llm=llm, repo=repo)
+    await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
+    answer_row = next(r for r in repo.saved if r["role"] == "assistant")
+    user_row = next(r for r in repo.saved if r["role"] == "user")
+    assert answer_row["tokens_in"] == 230  # 100 + 130 across both calls
+    assert answer_row["tokens_out"] == 35  # 20 + 15
+    assert user_row["tokens_in"] == 0 and user_row["tokens_out"] == 0
 
 
 async def test_history_is_loaded_into_contents():

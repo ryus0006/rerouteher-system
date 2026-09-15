@@ -29,12 +29,26 @@ async def load_recent(session: AsyncSession, session_id: str, limit: int = 10) -
 
 
 async def save_turn(
-    session: AsyncSession, session_id: str, username: str | None, role: str, content: str
+    session: AsyncSession,
+    session_id: str,
+    username: str | None,
+    role: str,
+    content: str,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
 ) -> None:
     await session.execute(
         text(
-            "INSERT INTO companion_message (session_id, username, role, content) "
-            "VALUES (:session_id, :username, :role, :content)"
+            "INSERT INTO companion_message "
+            "(session_id, username, role, content, tokens_in, tokens_out) "
+            "VALUES (:session_id, :username, :role, :content, :tokens_in, :tokens_out)"
         ),
-        {"session_id": session_id, "username": username, "role": role, "content": content},
+        {
+            "session_id": session_id,
+            "username": username,
+            "role": role,
+            "content": content,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        },
     )

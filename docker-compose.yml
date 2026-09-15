@@ -46,6 +46,8 @@ services:
       # E8 companion LLM. Passed from your exported shell var; empty -> companion
       # degrades to "not available". Set for real in the Coolify UI for production.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_API_KEY_2: ${GEMINI_API_KEY_2:-}
+      GEMINI_API_KEY_3: ${GEMINI_API_KEY_3:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
     ports:
       - "${API_PORT:-8080}:8080"

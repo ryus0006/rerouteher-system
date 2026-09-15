@@ -48,13 +48,24 @@ class Settings(BaseSettings):
     # the environment / .env; without it the companion degrades to "not available".
     # gemini_model is verified against the list-models API, not assumed.
     gemini_api_key: str = ""
+    # Fallback keys: when the active key is rate-limited (HTTP 429), the client
+    # rotates to the next non-empty one. Set as many as you have quota for.
+    gemini_api_key_2: str = ""
+    gemini_api_key_3: str = ""
     gemini_model: str = "gemini-3.1-flash-lite"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_timeout_s: float = 30.0
 
     @property
+    def gemini_api_keys(self) -> list[str]:
+        """Active key first, then fallbacks, skipping any that are unset."""
+        return [
+            k for k in (self.gemini_api_key, self.gemini_api_key_2, self.gemini_api_key_3) if k
+        ]
+
+    @property
     def llm_configured(self) -> bool:
-        return bool(self.gemini_api_key)
+        return bool(self.gemini_api_keys)
 
     @property
     def cors_origin_list(self) -> list[str]:

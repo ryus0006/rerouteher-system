@@ -129,14 +129,19 @@ class CompanionService:
 
         journey_update: JourneyUpdate | None = None
         sources: list[str] = []
+        tokens_in = 0
+        tokens_out = 0
 
         # A transient LLM failure (timeout, 5xx, parse) degrades to a calm message
         # rather than a 500 - which would also lose CORS headers and read as a
         # "failed to fetch" in the browser.
         try:
-            content = await self._llm.generate(
+            result = await self._llm.generate(
                 system_instruction=system, contents=contents, tools=[UPDATE_PROFILE_TOOL]
             )
+            tokens_in += result.tokens_in
+            tokens_out += result.tokens_out
+            content = result.content
             call = _first_function_call(content)
             if call and call.get("name") == "update_profile":
                 args = call.get("args") or {}
@@ -158,9 +163,12 @@ class CompanionService:
                         ],
                     }
                 )
-                content = await self._llm.generate(
+                result = await self._llm.generate(
                     system_instruction=system, contents=contents, tools=[UPDATE_PROFILE_TOOL]
                 )
+                tokens_in += result.tokens_in
+                tokens_out += result.tokens_out
+                content = result.content
         except LlmError as exc:
             logger.warning("companion LLM error: %s", exc)
             return AskResponse(answer=_TROUBLE, sources=[], journey_update=None)
@@ -168,13 +176,24 @@ class CompanionService:
         answer = _first_text(content) or "Got it."
 
         await self._repo.save_turn(session, req.session_id, username, "user", req.question)
-        await self._repo.save_turn(session, req.session_id, username, "assistant", answer)
+        # Token usage for the whole turn (both model calls) is recorded on the answer.
+        await self._repo.save_turn(
+            session,
+            req.session_id,
+            username,
+            "assistant",
+            answer,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
 
         logger.info(
-            "companion: session=%s page=%s tool=%s user=%s",
+            "companion: session=%s page=%s tool=%s user=%s tokens_in=%d tokens_out=%d",
             req.session_id,
             req.current_page,
             journey_update is not None,
             username or "-",
+            tokens_in,
+            tokens_out,
         )
         return AskResponse(answer=answer, sources=sources, journey_update=journey_update)

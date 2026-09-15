@@ -43,3 +43,12 @@ async def test_save_turn_executes_insert_with_params():
     assert params["session_id"] == "s1"
     assert params["username"] == "aisha"
     assert params["role"] == "user"
+    assert params["tokens_in"] == 0 and params["tokens_out"] == 0  # default
+
+
+async def test_save_turn_records_token_usage():
+    session = FakeSession([])
+    await companion_repo.save_turn(session, "s1", None, "assistant", "hi", tokens_in=120, tokens_out=45)
+    _, params = session.executed[0]
+    assert params["tokens_in"] == 120
+    assert params["tokens_out"] == 45
