@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import account, cv, employers, gap, learning, snapshot
+from app.api import account, companion, cv, employers, gap, learning, snapshot
 from app.config import get_settings
 from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.db import SessionLocal
@@ -20,9 +20,11 @@ from app.repositories import skills as skills_repo
 from app.services.account import AccountService
 from app.services.cv_extractor import CVExtractor
 from app.services.embedder import Embedder
+from app.services.companion import CompanionService
 from app.services.employers import EmployerService
 from app.services.gap import GapService
 from app.services.learning import LearningService
+from app.services.llm import GeminiClient
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.reranker import CrossEncoderReranker
 from app.services.snapshot import SnapshotService
@@ -130,6 +132,7 @@ def create_app() -> FastAPI:
     app.state.account_service = AccountService()
     app.state.learning_service = LearningService()
     app.state.employer_service = EmployerService()
+    app.state.companion_service = CompanionService(llm=GeminiClient.from_settings(settings))
 
     app.include_router(cv.router)
     app.include_router(snapshot.router)
@@ -137,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(account.router)
     app.include_router(learning.router)
     app.include_router(employers.router)
+    app.include_router(companion.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health():

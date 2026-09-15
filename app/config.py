@@ -44,6 +44,18 @@ class Settings(BaseSettings):
     session_https_only: bool = False  # True behind HTTPS in production
     session_same_site: str = "lax"  # "none" (with https_only) for cross-site prod
 
+    # E8 AI Companion (Gemini over direct HTTP, no SDK). GEMINI_API_KEY is read from
+    # the environment / .env; without it the companion degrades to "not available".
+    # gemini_model is verified against the list-models API, not assumed.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_timeout_s: float = 30.0
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.gemini_api_key)
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

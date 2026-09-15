@@ -13,14 +13,16 @@ services:
       - pgdata:/var/lib/postgresql
       # runs on first init only, in order: bootstrap (extension + schema), db-team base
       # schema, db-team data, our E5 account model change (for db-team review), our E6
-      # learning data fill, our E9 employer overlay, then finalize (turn FK back on).
+      # learning data fill, our E9 employer overlay, our E8 companion history, then
+      # finalize (turn FK back on).
       - ./db/00_init_extensions_schemas.sql:/docker-entrypoint-initdb.d/00_init_extensions_schemas.sql:ro
       - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./db/02_data.sql:/docker-entrypoint-initdb.d/02_data.sql:ro
       - ./db/03_e5_account_model.sql:/docker-entrypoint-initdb.d/03_e5_account_model.sql:ro
       - ./db/04_e6_learning_seed.sql:/docker-entrypoint-initdb.d/04_e6_learning_seed.sql:ro
       - ./db/05_e9_employer_overlay.sql:/docker-entrypoint-initdb.d/05_e9_employer_overlay.sql:ro
-      - ./db/06_finalize.sql:/docker-entrypoint-initdb.d/06_finalize.sql:ro
+      - ./db/06_e8_companion_history.sql:/docker-entrypoint-initdb.d/06_e8_companion_history.sql:ro
+      - ./db/07_finalize.sql:/docker-entrypoint-initdb.d/07_finalize.sql:ro
     healthcheck:
       # -h localhost forces a TCP probe. The image runs a temporary socket-only server
       # while it loads the init scripts; a plain pg_isready would report healthy during
@@ -41,6 +43,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/rerouteher}
       # Set in the Coolify UI (api resource -> Environment Variables) for production.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:5174}
+      # E8 companion LLM. Passed from your exported shell var; empty -> companion
+      # degrades to "not available". Set for real in the Coolify UI for production.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:
