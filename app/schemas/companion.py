@@ -5,6 +5,11 @@ from app.schemas.cv import CV
 from app.schemas.snapshot import Break
 
 
+class SkillChoice(BaseModel):
+    skill_id: str
+    skill_name: str
+
+
 class JourneyIn(BaseModel):
     # Her client-side journey, carried in so the backend can ground answers.
     # All optional; US8.1 reads cv (and may set break). "break" is a Python
@@ -16,6 +21,11 @@ class JourneyIn(BaseModel):
     gapResult: dict | None = None
     selectedRole: dict | None = None
     employerPriorities: list[str] = []
+    # Skills she already ticked from a role checklist, so the companion does not re-offer them.
+    confirmedSkills: list[SkillChoice] = []
+    # The role a checklist was last offered for, echoed back so the companion does not
+    # re-offer the same role's skills but still re-offers when she changes her role.
+    roleSkillsOfferedForRoleId: str | None = None
 
 
 class AskRequest(BaseModel):
@@ -46,3 +56,8 @@ class AskResponse(BaseModel):
     sources: list[str] = []
     journey_update: JourneyUpdate | None = None
     cta: CtaOut | None = None
+    # A checklist of role skills the companion offers her to tick (US8.1.17).
+    skill_choices: list[SkillChoice] | None = None
+    # The role_id the skill_choices belong to; the frontend records it as
+    # roleSkillsOfferedForRoleId so the same role is not offered again.
+    skill_choices_role_id: str | None = None

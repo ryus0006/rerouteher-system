@@ -8,7 +8,8 @@ Snapshot generation is a later story; this only builds the profile.
 import logging
 
 from app.repositories import companion as companion_repo
-from app.schemas.companion import AskRequest, AskResponse, CtaOut, JourneyUpdate
+from app.repositories import roles as roles_repo
+from app.schemas.companion import AskRequest, AskResponse, CtaOut, JourneyUpdate, SkillChoice
 from app.services.llm import LlmError
 
 logger = logging.getLogger("rerouteher")
@@ -26,10 +27,19 @@ SYSTEM_PROMPT = (
     "her profile is complete do not raise it again. If she mentions what she "
     "most wants from an employer (flexible or remote work, childcare support, parental "
     "support, a return-to-work programme, or an inclusive workplace), capture up to three "
-    "as employerPriorities. When you have enough, call the update_profile tool with a cv "
-    "object (raw_text, experiences, skill_mentions), a break object (duration_years, "
+    "as employerPriorities. Map what she did during her break to the closest of our fixed "
+    "activity ids (childcare, running the household, caring for elderly or sick family, "
+    "day-to-day coordination, managing schedules, event planning, paperwork and records, "
+    "budgeting, home repairs and contractors, negotiation, teaching or tutoring, "
+    "volunteering) and pass them as break.activities, so her break is recognised as real "
+    "experience, never a blank gap. When you have enough, call the update_profile tool with "
+    "a cv object (raw_text, experiences, skill_mentions), a break object (duration_years, "
     "activities) and employerPriorities if she gave any, then tell her you have drafted "
-    "her profile and invite her to review and confirm it or ask for a change.\n\n"
+    "her profile and invite her to review and confirm it or ask for a change. Once you know "
+    "her most recent occupation, call offer_role_skills with it so she can tick the skills "
+    "she already has from that role. Only describe actions you have actually taken this turn "
+    "- do not say you have shown her a checklist or saved anything unless you called the "
+    "matching tool.\n\n"
     "If her results are provided below, answer her questions about her skills, readiness "
     "and priority gaps grounded only in those results, in plain language that relates them "
     "to her experience and target role. When she asks about a specific gap, explain "
@@ -51,6 +61,24 @@ _VALID_PRIORITY_IDS = [
     "inclusive_workplace",
 ]
 _MAX_PRIORITIES = 3
+
+# Fixed career-break activity taxonomy (source of truth = frontend activityTaxonomy.js,
+# == the 12 distinct caregiving_map.activity_id values). The companion maps her free-text
+# break to these ids so the Career Break page highlights them and caregiving_map reframes them.
+_VALID_ACTIVITY_IDS = [
+    "care_household.cared_for_children",
+    "care_household.ran_household",
+    "care_household.cared_for_elderly_sick_family",
+    "planning.organised_family_logistics",
+    "planning.managed_multiple_schedules",
+    "planning.planned_events_gatherings",
+    "planning.kept_household_records",
+    "finance.managed_budget_finances",
+    "finance.managed_home_repairs_vendors",
+    "finance.handled_disputes_negotiations",
+    "learning.taught_tutored_children",
+    "learning.volunteered_community_roles",
+]
 
 UPDATE_PROFILE_TOOL = {
     "function_declarations": [
@@ -85,7 +113,14 @@ UPDATE_PROFILE_TOOL = {
                         "type": "object",
                         "properties": {
                             "duration_years": {"type": "number"},
-                            "activities": {"type": "array", "items": {"type": "string"}},
+                            "activities": {
+                                "type": "array",
+                                "description": (
+                                    "The things she did during her break, each mapped to the "
+                                    "closest of our fixed activity ids. Only use ids from the list."
+                                ),
+                                "items": {"type": "string", "enum": _VALID_ACTIVITY_IDS},
+                            },
                         },
                     },
                     "employerPriorities": {
@@ -123,7 +158,29 @@ POINT_TO_STEP_TOOL = {
 # Maps an allowed step to the CTA the frontend renders (button -> client-side nav).
 _STEP_CTAS = {"learning": {"label": "Open your learning plan", "to": "/plan/learning"}}
 
-_TOOLS = [UPDATE_PROFILE_TOOL, POINT_TO_STEP_TOOL]
+OFFER_ROLE_SKILLS_TOOL = {
+    "function_declarations": [
+        {
+            "name": "offer_role_skills",
+            "description": (
+                "Offer her a checklist of skills common to her most recent occupation so she "
+                "can tick the ones she already has. Call it once you know her occupation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"occupation": {"type": "string"}},
+                "required": ["occupation"],
+            },
+        }
+    ]
+}
+_MAX_ROLE_SKILL_CHOICES = 15
+
+_TOOLS = [UPDATE_PROFILE_TOOL, POINT_TO_STEP_TOOL, OFFER_ROLE_SKILLS_TOOL]
+
+# Cap on tool-calling rounds per turn, so a model that keeps calling tools cannot loop
+# unbounded; on the cap we force one final answer with no tools.
+_MAX_TOOL_ITERS = 4
 
 _NOT_AVAILABLE = "The companion is not available right now. Please try again later."
 _TROUBLE = "I am having a little trouble right now. Please try again in a moment."
@@ -143,10 +200,38 @@ def _first_function_call(content: dict) -> dict | None:
     return None
 
 
+def _function_calls(content: dict) -> list[dict]:
+    return [p["functionCall"] for p in content.get("parts", []) if "functionCall" in p]
+
+
 class CompanionService:
-    def __init__(self, llm=None, repo=companion_repo) -> None:
+    def __init__(self, llm=None, repo=companion_repo, role_resolver=None) -> None:
         self._llm = llm
         self._repo = repo
+        # anything exposing async resolve_role(title, skill_names, session) -> role|None;
+        # the snapshot service provides it so the checklist role matches the derived one.
+        self._role_resolver = role_resolver
+
+    async def _role_skill_choices(self, occupation, req, session):
+        """Resolve her occupation to a role and return (role_id, distinctive skill choices),
+        excluding ones she already confirmed. None when nothing resolves, no new choices, or
+        the role was already offered this session (gate on the resolved role_id so a genuine
+        role change still re-offers)."""
+        if not occupation or self._role_resolver is None:
+            return None
+        role = await self._role_resolver.resolve_role(occupation, [], session)
+        if role is None:
+            return None
+        if role.role_id == req.journey.roleSkillsOfferedForRoleId:
+            return None  # already offered for this role; do not re-offer
+        confirmed = [c.skill_id for c in req.journey.confirmedSkills]
+        skills = await roles_repo.get_distinctive_role_skills(
+            session, role.role_id, _MAX_ROLE_SKILL_CHOICES, confirmed
+        )
+        choices = [SkillChoice(skill_id=s.skill_id, skill_name=s.skill_name) for s in skills]
+        if not choices:
+            return None
+        return role.role_id, choices
 
     def _journey_note(self, req: AskRequest) -> str:
         j = req.journey
@@ -225,49 +310,75 @@ class CompanionService:
 
         journey_update: JourneyUpdate | None = None
         cta: CtaOut | None = None
+        skill_choices = None
+        skill_choices_role_id = None
         sources: list[str] = []
         tokens_in = 0
         tokens_out = 0
 
-        # A transient LLM failure (timeout, 5xx, parse) degrades to a calm message
-        # rather than a 500 - which would also lose CORS headers and read as a
-        # "failed to fetch" in the browser.
+        # Bounded multi-tool agentic loop: execute EVERY tool the model calls, feed all
+        # results back, and let it chain for a few rounds until it returns plain text. This
+        # is what lets one turn both draft a profile and open a checklist, and stops the
+        # model narrating a tool it did not actually call.
+        # A transient LLM failure degrades to a calm message rather than a 500 - which would
+        # also lose CORS headers and read as a "failed to fetch" in the browser.
         try:
-            result = await self._llm.generate(
-                system_instruction=system, contents=contents, tools=_TOOLS
-            )
-            tokens_in += result.tokens_in
-            tokens_out += result.tokens_out
-            content = result.content
-            call = _first_function_call(content)
-            if call:
-                name = call.get("name")
-                args = call.get("args") or {}
-                if name == "update_profile":
-                    journey_update = JourneyUpdate.model_validate(args)
-                    # Defend the fixed pick-list even though the tool enum constrains it:
-                    # drop anything unknown, keep order, cap at three.
-                    journey_update.employerPriorities = [
-                        p for p in journey_update.employerPriorities if p in _VALID_PRIORITY_IDS
-                    ][:_MAX_PRIORITIES]
-                    if req.journey.cv is not None:
-                        sources.append("Your CV")
-                elif name == "point_to_step":
-                    mapped = _STEP_CTAS.get(args.get("step"))
-                    if mapped:
-                        cta = CtaOut(**mapped)
-                # feed the tool result back so the model gives a natural reply
-                contents.append(content)
-                contents.append(
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"functionResponse": {"name": name, "response": {"status": "ok"}}}
-                        ],
-                    }
-                )
+            content = None
+            for _ in range(_MAX_TOOL_ITERS):
                 result = await self._llm.generate(
                     system_instruction=system, contents=contents, tools=_TOOLS
+                )
+                tokens_in += result.tokens_in
+                tokens_out += result.tokens_out
+                content = result.content
+                calls = _function_calls(content)
+                if not calls:
+                    break
+                contents.append(content)
+                response_parts = []
+                for call in calls:
+                    name = call.get("name")
+                    args = call.get("args") or {}
+                    status = {"status": "ok"}
+                    if name == "update_profile":
+                        journey_update = JourneyUpdate.model_validate(args)
+                        # Defend the fixed pick-list even though the tool enum constrains it:
+                        # drop anything unknown, keep order, cap at three.
+                        journey_update.employerPriorities = [
+                            p for p in journey_update.employerPriorities if p in _VALID_PRIORITY_IDS
+                        ][:_MAX_PRIORITIES]
+                        # Defend the fixed activity taxonomy: keep only ids the CareerBreak page
+                        # and caregiving_map recognise (so both can render/reframe them).
+                        if journey_update.break_ is not None:
+                            journey_update.break_.activities = [
+                                a
+                                for a in journey_update.break_.activities
+                                if a in _VALID_ACTIVITY_IDS
+                            ]
+                        if req.journey.cv is not None:
+                            sources.append("Your CV")
+                        status = {"status": "saved"}
+                    elif name == "point_to_step":
+                        mapped = _STEP_CTAS.get(args.get("step"))
+                        if mapped:
+                            cta = CtaOut(**mapped)
+                    elif name == "offer_role_skills":
+                        offered = await self._role_skill_choices(
+                            args.get("occupation") or "", req, session
+                        )
+                        if offered:
+                            skill_choices_role_id, skill_choices = offered
+                            status = {"status": "shown", "count": len(skill_choices)}
+                        else:
+                            status = {"status": "already_shown"}
+                    response_parts.append(
+                        {"functionResponse": {"name": name, "response": status}}
+                    )
+                contents.append({"role": "user", "parts": response_parts})
+            else:
+                # cap reached while still tool-calling: force one clean text answer
+                result = await self._llm.generate(
+                    system_instruction=system, contents=contents, tools=None
                 )
                 tokens_in += result.tokens_in
                 tokens_out += result.tokens_out
@@ -276,7 +387,7 @@ class CompanionService:
             logger.warning("companion LLM error: %s", exc)
             return AskResponse(answer=_TROUBLE, sources=[], journey_update=None)
 
-        answer = _first_text(content) or "Got it."
+        answer = _first_text(content or {}) or "Got it."
 
         await self._repo.save_turn(session, req.session_id, username, "user", req.question)
         # Token usage for the whole turn (both model calls) is recorded on the answer.
@@ -299,4 +410,11 @@ class CompanionService:
             tokens_in,
             tokens_out,
         )
-        return AskResponse(answer=answer, sources=sources, journey_update=journey_update, cta=cta)
+        return AskResponse(
+            answer=answer,
+            sources=sources,
+            journey_update=journey_update,
+            cta=cta,
+            skill_choices=skill_choices,
+            skill_choices_role_id=skill_choices_role_id,
+        )

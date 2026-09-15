@@ -91,6 +91,12 @@ async def lifespan(app: FastAPI):
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher, reranker=reranker
     )
     app.state.gap_service = GapService(settings=settings)
+    # Companion resolves a self-declared occupation to a role via the snapshot service
+    # (same embedding + rerank path), so it is wired here where that service exists.
+    app.state.companion_service = CompanionService(
+        llm=GeminiClient.from_settings(settings),
+        role_resolver=app.state.snapshot_service,
+    )
 
     logger.info(
         "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d",
@@ -128,11 +134,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RequestLoggingMiddleware)
 
-    # Stateless service, so it is wired here rather than in lifespan.
+    # Stateless services, so they are wired here rather than in lifespan.
     app.state.account_service = AccountService()
     app.state.learning_service = LearningService()
     app.state.employer_service = EmployerService()
-    app.state.companion_service = CompanionService(llm=GeminiClient.from_settings(settings))
+    # companion_service is wired in the lifespan: it needs snapshot_service as its
+    # role resolver, which is only built there.
 
     app.include_router(cv.router)
     app.include_router(snapshot.router)

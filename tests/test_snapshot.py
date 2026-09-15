@@ -258,3 +258,66 @@ async def test_reframe_dedupes():
     assert resp.reframed_skills[0].skill == "Coordination"
     # no embedder -> no occupation match
     assert resp.previous_occupation is None
+
+
+async def test_resolve_role_uses_embedding_nearest_no_reranker():
+    # patch_repos.nearest_by_embedding returns Project Coordinator first; no reranker to reorder
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None, reranker=None)
+    role = await svc.resolve_role("project coordinator", [], session=object())
+    assert role.role_id == "r1" and role.role_title == "Project Coordinator"
+
+
+async def test_resolve_role_reranker_reorders(monkeypatch):
+    async def _texts(session, ids):
+        return {rid: f"text {rid}" for rid in ids}
+
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts)
+
+    class PickR2:
+        model_id = "fake"
+
+        def rerank(self, query, candidates):
+            from app.services.reranker import RerankResult
+
+            # rank r2 top regardless of embedding order
+            return sorted(
+                (RerankResult(c.role_id, 1.0 if c.role_id == "r2" else 0.1) for c in candidates),
+                key=lambda r: r.score,
+                reverse=True,
+            )
+
+    svc = SnapshotService(
+        Settings(), embedder=FakeEmbedder(), tfidf_matcher=None, reranker=PickR2()
+    )
+    role = await svc.resolve_role("operations", [], session=object())
+    assert role.role_id == "r2"  # reranker pick, not the nearest-by-embedding top
+
+
+async def test_resolve_role_none_when_no_embedder_and_no_tfidf():
+    svc = SnapshotService(Settings(), embedder=None, tfidf_matcher=None, reranker=None)
+    assert await svc.resolve_role("marketing manager", [], session=object()) is None
+
+
+async def test_confirmed_skills_merge_into_professional():
+    svc = SnapshotService(Settings(), embedder=None, tfidf_matcher=None, reranker=None)
+    cv = CV(raw_text="", experiences=[], skill_mentions=[])
+    req = SnapshotRequest(
+        cv=cv, break_=Break(duration_years=0, activities=[]), confirmed_skills=["s_ux"]
+    )
+    resp = await svc.generate(req, session=object())
+    confirmed = [p for p in resp.professional_skills if p.source == "role_confirmed"]
+    assert any(p.skill_id == "s_ux" and p.skill == "User research" for p in confirmed)
+
+
+async def test_confirmed_skill_does_not_override_cv_evidence():
+    # s_budget is extracted from the CV ("budgeting" mention); confirming it must not
+    # downgrade its source to role_confirmed.
+    svc = SnapshotService(Settings(), embedder=None, tfidf_matcher=None, reranker=None)
+    req = SnapshotRequest(
+        cv=CV(raw_text="budgeting", experiences=[], skill_mentions=["budgeting"]),
+        break_=Break(duration_years=0, activities=[]),
+        confirmed_skills=["s_budget"],
+    )
+    resp = await svc.generate(req, session=object())
+    budget = next(p for p in resp.professional_skills if p.skill_id == "s_budget")
+    assert budget.source == "experience"

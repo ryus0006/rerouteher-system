@@ -129,6 +129,19 @@ class SnapshotService:
                     ),
                 )
 
+        # 4. skills she ticked from her previous role's checklist (already resolved
+        # skill_ids). CV-extracted evidence wins on conflict, so only add new ids.
+        for skill_id in req.confirmed_skills:
+            found.setdefault(
+                skill_id,
+                ProfessionalSkill(
+                    skill=self._skill_to_canonical.get(skill_id, skill_id),
+                    skill_id=skill_id,
+                    source="role_confirmed",
+                    evidence="confirmed from role",
+                ),
+            )
+
         skills = list(found.values())
         # Diagnostic: the final accepted skills with the evidence that admitted each, so the
         # pass responsible for a noise skill is clear ("semantic match" = semantic pass;
@@ -329,6 +342,42 @@ class SnapshotService:
                 )
                 seen_ids.add(r.role_id)
         return previous, recommended
+
+    async def resolve_role(self, title, skill_names, session):
+        """Resolve a self-declared occupation to its best role via the same reliable path
+        the snapshot uses: embed title+skills, take nearest roles by embedding, and pick
+        the best with the cross-encoder when available. The TF-IDF Tier-1 classifier is
+        brittle, so it is only a fallback when no embedder is loaded. Returns an object
+        with .role_id/.role_title, or None."""
+        norm_title = normalize_text(title or "")
+        norm_skills = [normalize_text(s) for s in (skill_names or []) if s.strip()]
+        emb_text = self._embedding_text(norm_title, norm_skills)
+        if self._embedder is None or not emb_text:
+            # no embedder: best-effort Tier-1, else give up (never guess)
+            per_title = await anyio.to_thread.run_sync(
+                self._gather_tier1, [norm_title] if norm_title else [], norm_skills
+            )
+            if per_title:
+                resolved = await self._roles_from_matches(per_title[0][1], session)
+                if resolved:
+                    return resolved[0][0]
+            return None
+        profile_vec = await anyio.to_thread.run_sync(self._embedder.encode_one, emb_text)
+        nearest = await roles_repo.nearest_by_embedding(
+            session, profile_vec, k=self._settings.rerank_candidate_pool
+        )
+        if not nearest:
+            return None
+        if self._reranker is not None:
+            by_id = {r.role_id: r for r in nearest}
+            texts = await roles_repo.get_rerank_texts(session, list(by_id))
+            candidates = [RerankCandidate(rid, texts[rid]) for rid in by_id if rid in texts]
+            if candidates:
+                query = f"{norm_title}. skills: {', '.join(norm_skills)}".strip()
+                ranked = await anyio.to_thread.run_sync(self._reranker.rerank, query, candidates)
+                if ranked:
+                    return by_id[ranked[0].role_id]
+        return nearest[0]
 
     def _gather_tier1(self, titles: list[str], skill_names: list[str]):
         """Classify each title once. Returns [(top_score, predictions)] in CV order,

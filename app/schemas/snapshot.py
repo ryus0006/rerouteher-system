@@ -14,6 +14,9 @@ class Break(BaseModel):
 class SnapshotRequest(BaseModel):
     cv: CV
     break_: Break
+    # Skill ids she ticked from her previous role's checklist (chat path). Merged into
+    # professional_skills at generation; empty for the page path.
+    confirmed_skills: list[str] = []
 
     model_config = {"populate_by_name": True}
 
@@ -27,7 +30,7 @@ class SnapshotRequest(BaseModel):
 class ProfessionalSkill(BaseModel):
     skill: str
     skill_id: str | None = None
-    source: Literal["experience"] = "experience"
+    source: Literal["experience", "role_confirmed"] = "experience"
     evidence: str | None = None
 
 
