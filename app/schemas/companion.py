@@ -29,9 +29,20 @@ class JourneyUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     cv: CV | None = None
     break_: Break | None = Field(default=None, alias="break")
+    # Her top workplace priorities (fixed pick-list ids), captured in the profile
+    # builder so E9 employer matching has them even when the Priorities page is skipped.
+    employerPriorities: list[str] = []
+
+
+class CtaOut(BaseModel):
+    # Optional call-to-action the companion offers; the frontend renders it as a
+    # button that navigates client-side while keeping the chat open. Never auto-fired.
+    label: str
+    to: str
 
 
 class AskResponse(BaseModel):
     answer: str
     sources: list[str] = []
     journey_update: JourneyUpdate | None = None
+    cta: CtaOut | None = None
