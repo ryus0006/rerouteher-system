@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from app.repositories import learning as learning_repo
 from app.repositories.learning import _provider_slug
 from app.services.learning_fill import ChosenResource
@@ -60,7 +62,7 @@ async def test_upsert_writes_provider_resource_link_with_existing_provider_id():
     res_call = next(c for c in session.calls if "insert into learning_resource " in c[0].lower())
     assert res_call[1]["pid"] == "OPENLEARN"
     assert res_call[1]["rid"] == "ai-s1"
-    assert res_call[1]["duration"] == "90 minutes"
+    assert res_call[1]["duration"] == timedelta(minutes=90)
     link_call = next(c for c in session.calls if "insert into learning_resource_skill" in c[0].lower())
     assert link_call[1]["sid"] == "s1" and link_call[1]["rid"] == "ai-s1"
 

@@ -145,13 +145,14 @@ async def upsert_filled_resource(session: AsyncSession, chosen) -> None:
     provider_id = str(row.provider_id) if row else slug
 
     resource_id = f"ai-{chosen.skill_id}"
-    duration = f"{chosen.duration_minutes} minutes" if chosen.duration_minutes else None
+    # asyncpg encodes a timedelta to the interval column directly; a string fails.
+    duration = timedelta(minutes=chosen.duration_minutes) if chosen.duration_minutes else None
     await session.execute(
         text(
             "INSERT INTO learning_resource "
             "(resource_id, provider_id, title, url, delivery_mode, duration, "
             " language, level, licence_note, last_verified_at) "
-            "VALUES (:rid, :pid, :title, :url, :mode, CAST(:duration AS interval), "
+            "VALUES (:rid, :pid, :title, :url, :mode, :duration, "
             " 'en', :level, :licence, now()) "
             "ON CONFLICT (resource_id) DO NOTHING"
         ),
