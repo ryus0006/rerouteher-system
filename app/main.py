@@ -24,7 +24,9 @@ from app.services.companion import CompanionService
 from app.services.employers import EmployerService
 from app.services.gap import GapService
 from app.services.learning import LearningService
+from app.services.learning_fill import LearningFillService
 from app.services.llm import GeminiClient
+from app.services.tavily import TavilySearcher
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.reranker import CrossEncoderReranker
 from app.services.snapshot import SnapshotService
@@ -91,20 +93,33 @@ async def lifespan(app: FastAPI):
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher, reranker=reranker
     )
     app.state.gap_service = GapService(settings=settings)
+    # One Gemini client is shared by the companion and the learning fill.
+    llm = GeminiClient.from_settings(settings)
     # Companion resolves a self-declared occupation to a role via the snapshot service
     # (same embedding + rerank path), so it is wired here where that service exists.
     app.state.companion_service = CompanionService(
-        llm=GeminiClient.from_settings(settings),
+        llm=llm,
         role_resolver=app.state.snapshot_service,
+    )
+    # E6 on-demand learning fill: Tavily search + Gemini pick, run in the background
+    # after a gap is computed. Disabled (degrades to the YouTube fallback) if either
+    # client is unavailable or learning_fill_enabled is false.
+    app.state.learning_fill_service = LearningFillService(
+        llm,
+        TavilySearcher.from_settings(settings),
+        enabled=settings.learning_fill_enabled,
+        url_timeout_s=settings.learning_fill_url_timeout_s,
+        candidates=settings.learning_fill_candidates,
     )
 
     logger.info(
-        "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d",
+        "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d learning_fill=%s",
         embedder is not None,
         tfidf_matcher is not None,
         reranker.model_id if reranker else None,
         nlp is not None,
         len(skill_dictionary),
+        app.state.learning_fill_service.enabled,
     )
 
     yield

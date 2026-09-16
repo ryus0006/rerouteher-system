@@ -49,6 +49,12 @@ services:
       GEMINI_API_KEY_2: ${GEMINI_API_KEY_2:-}
       GEMINI_API_KEY_3: ${GEMINI_API_KEY_3:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      # E6 learning-material fill. Web search via the Tavily API (official, free
+      # tier). Empty -> learning fill degrades off, learning page keeps its fallback.
+      # Backup keys rotate on a 429, same as the Gemini keys.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      TAVILY_API_KEY_2: ${TAVILY_API_KEY_2:-}
+      TAVILY_API_KEY_3: ${TAVILY_API_KEY_3:-}
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:

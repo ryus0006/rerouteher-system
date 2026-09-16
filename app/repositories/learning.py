@@ -3,6 +3,7 @@
 Reference tables live in the rerouteher schema; the connection search_path
 resolves the unqualified names. Requests write nothing.
 """
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -92,3 +93,81 @@ async def get_curated_resources(
         )
         for r in rows
     ]
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _provider_slug(name: str) -> str:
+    slug = _SLUG_RE.sub("-", (name or "").lower()).strip("-")
+    return f"web-{slug}" if slug else "web"
+
+
+async def skills_missing_resources(session: AsyncSession, skill_ids: list[str]) -> list[str]:
+    """Of the given skill ids, those with no curated learning_resource_skill row.
+
+    Input order is preserved so the fill honours the gap's uplift ordering.
+    """
+    if not skill_ids:
+        return []
+    rows = (
+        await session.execute(
+            text("SELECT skill_id FROM learning_resource_skill WHERE skill_id = ANY(:ids)"),
+            {"ids": skill_ids},
+        )
+    ).all()
+    have = {str(r.skill_id) for r in rows}
+    return [s for s in skill_ids if s not in have]
+
+
+async def upsert_filled_resource(session: AsyncSession, chosen) -> None:
+    """Persist one AI-filled resource: provider + learning_resource + link.
+
+    Idempotent per skill (resource_id = 'ai-<skill_id>', ON CONFLICT DO NOTHING).
+    The provider row is ensured by name, then the actual provider_id is read back
+    so the FK always points at an existing row (an existing provider may use a
+    different id than our slug). Caller owns the transaction (commit).
+    """
+    slug = _provider_slug(chosen.provider_name)
+    await session.execute(
+        text(
+            "INSERT INTO provider (provider_id, provider_name) "
+            "VALUES (:pid, :pname) ON CONFLICT DO NOTHING"
+        ),
+        {"pid": slug, "pname": chosen.provider_name},
+    )
+    row = (
+        await session.execute(
+            text("SELECT provider_id FROM provider WHERE provider_name = :pname"),
+            {"pname": chosen.provider_name},
+        )
+    ).first()
+    provider_id = str(row.provider_id) if row else slug
+
+    resource_id = f"ai-{chosen.skill_id}"
+    duration = f"{chosen.duration_minutes} minutes" if chosen.duration_minutes else None
+    await session.execute(
+        text(
+            "INSERT INTO learning_resource "
+            "(resource_id, provider_id, title, url, delivery_mode, duration, "
+            " language, level, licence_note, last_verified_at) "
+            "VALUES (:rid, :pid, :title, :url, :mode, CAST(:duration AS interval), "
+            " 'en', :level, :licence, now()) "
+            "ON CONFLICT (resource_id) DO NOTHING"
+        ),
+        {
+            "rid": resource_id, "pid": provider_id, "title": chosen.title,
+            "url": chosen.url, "mode": chosen.delivery_mode, "duration": duration,
+            "level": chosen.level, "licence": chosen.licence_note,
+        },
+    )
+    await session.execute(
+        text(
+            "INSERT INTO learning_resource_skill "
+            "(resource_id, skill_id, relevance, evidence_note) "
+            "VALUES (:rid, :sid, :rel, :note) "
+            "ON CONFLICT (resource_id, skill_id) DO NOTHING"
+        ),
+        {"rid": resource_id, "sid": chosen.skill_id,
+         "rel": chosen.relevance, "note": chosen.evidence_note},
+    )

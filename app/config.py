@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_timeout_s: float = 30.0
 
+    # E6 on-demand learning fill (Tavily search + Gemini picks one free resource).
+    learning_fill_enabled: bool = True
+    learning_fill_url_timeout_s: float = 6.0
+    # Web search for the fill (Tavily official API). Empty -> fill disabled.
+    # Backup keys rotate on a rate-limit (HTTP 429), same as the Gemini keys.
+    tavily_api_key: str = ""
+    tavily_api_key_2: str = ""
+    tavily_api_key_3: str = ""
+    tavily_base_url: str = "https://api.tavily.com"
+    tavily_timeout_s: float = 20.0
+    learning_fill_candidates: int = 6
+
     @property
     def gemini_api_keys(self) -> list[str]:
         """Active key first, then fallbacks, skipping any that are unset."""
@@ -66,6 +78,13 @@ class Settings(BaseSettings):
     @property
     def llm_configured(self) -> bool:
         return bool(self.gemini_api_keys)
+
+    @property
+    def tavily_api_keys(self) -> list[str]:
+        """Active key first, then backups, skipping any that are unset."""
+        return [
+            k for k in (self.tavily_api_key, self.tavily_api_key_2, self.tavily_api_key_3) if k
+        ]
 
     @property
     def cors_origin_list(self) -> list[str]:
