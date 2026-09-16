@@ -26,6 +26,9 @@ class JourneyIn(BaseModel):
     # The role a checklist was last offered for, echoed back so the companion does not
     # re-offer the same role's skills but still re-offers when she changes her role.
     roleSkillsOfferedForRoleId: str | None = None
+    # Her computed employer matches (EmployerMatchOut shape), carried so the companion can
+    # explain them and cite the report behind each. Read defensively via .get.
+    employerMatches: list[dict] = []
 
 
 class AskRequest(BaseModel):

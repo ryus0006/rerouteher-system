@@ -46,6 +46,13 @@ SYSTEM_PROMPT = (
     "briefly why it is a gap and offer her learning plan by calling the point_to_step tool "
     "with step 'learning'. If she asks something her results do not cover, say you cannot "
     "answer that from her results rather than inventing a figure.\n\n"
+    "If her employer matches are provided below, answer why an employer matches her by "
+    "relating what it discloses to her stated priorities, and cite the source report by name "
+    "with its link so she can open it. If she asks about a detail the data does not cover, or "
+    "a priority the employer does not disclose, say it is not disclosed rather than guessing.\n\n"
+    "If she asks for help with where she is or what to do next, use the page she is on and "
+    "what her journey already has to explain the current step briefly and point her to the "
+    "next step by calling point_to_step with the matching step.\n\n"
     "Stay within career re-entry support: decline medical, legal, financial or other "
     "out-of-scope advice and steer back. Use only what she has told you or what is in her "
     "journey; never invent facts."
@@ -142,13 +149,18 @@ POINT_TO_STEP_TOOL = {
         {
             "name": "point_to_step",
             "description": (
-                "Offer the mother an optional link to a step in her journey that helps her "
-                "next action, such as her learning plan for a skill gap. Use sparingly, only "
-                "when it genuinely helps."
+                "Offer her an optional button to a step in her journey that helps her next "
+                "action - her skill snapshot, readiness and gaps, learning plan, or employer "
+                "matches. Use sparingly, only when it genuinely helps."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"step": {"type": "string", "enum": ["learning"]}},
+                "properties": {
+                    "step": {
+                        "type": "string",
+                        "enum": ["learning", "snapshot", "gap", "employers"],
+                    }
+                },
                 "required": ["step"],
             },
         }
@@ -156,7 +168,12 @@ POINT_TO_STEP_TOOL = {
 }
 
 # Maps an allowed step to the CTA the frontend renders (button -> client-side nav).
-_STEP_CTAS = {"learning": {"label": "Open your learning plan", "to": "/plan/learning"}}
+_STEP_CTAS = {
+    "learning": {"label": "Open your learning plan", "to": "/plan/learning"},
+    "snapshot": {"label": "See my skill snapshot", "to": "/diagnostic/snapshot"},
+    "gap": {"label": "See my readiness & gaps", "to": "/diagnostic/gap"},
+    "employers": {"label": "See my employer matches", "to": "/plan/employers/matches"},
+}
 
 OFFER_ROLE_SKILLS_TOOL = {
     "function_declarations": [
@@ -292,11 +309,37 @@ class CompanionService:
             bits.append(f"Roles recommended for her: {', '.join(recs[:5])}.")
         return " ".join(bits)
 
+    @staticmethod
+    def _pretty_priority(token: str) -> str:
+        return token.replace("_", " ").strip()
+
+    def _employer_note(self, req: AskRequest) -> str:
+        # Grounds employer Q&A (US8.3) in her own matches: employer names, the priorities
+        # each meets vs does not disclose, and the report behind the claim. No PII.
+        matches = req.journey.employerMatches or []
+        bits = []
+        for m in matches[:5]:
+            name = m.get("name")
+            if not name:
+                continue
+            met = [self._pretty_priority(p) for p in (m.get("met") or [])]
+            unmet = [self._pretty_priority(p) for p in (m.get("unmet") or [])]
+            parts = [name]
+            if met:
+                parts.append(f"meets {', '.join(met)}")
+            if unmet:
+                parts.append(f"does not disclose {', '.join(unmet)}")
+            report = m.get("report") or {}
+            if report.get("label") and report.get("url"):
+                parts.append(f"source: {report['label']} ({report['url']})")
+            bits.append("; ".join(parts) + ".")
+        return ("Her employer matches: " + " ".join(bits)) if bits else ""
+
     async def ask(self, req: AskRequest, session, username: str | None) -> AskResponse:
         if self._llm is None:
             return AskResponse(answer=_NOT_AVAILABLE, sources=[], journey_update=None)
 
-        history = await self._repo.load_recent(session, req.session_id, 10)
+        history = await self._repo.load_recent(session, req.session_id, username, 10)
         contents: list[dict] = [
             {"role": "model" if t.role == "assistant" else "user", "parts": [{"text": t.content}]}
             for t in history
@@ -304,7 +347,11 @@ class CompanionService:
         contents.append({"role": "user", "parts": [{"text": req.question}]})
 
         system = SYSTEM_PROMPT
-        extras = " ".join(p for p in (self._journey_note(req), self._results_note(req)) if p)
+        extras = " ".join(
+            p
+            for p in (self._journey_note(req), self._results_note(req), self._employer_note(req))
+            if p
+        )
         if extras:
             system = f"{system}\n\nContext: {extras}"
 

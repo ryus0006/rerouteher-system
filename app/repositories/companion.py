@@ -12,17 +12,25 @@ class Turn:
     content: str
 
 
-async def load_recent(session: AsyncSession, session_id: str, limit: int = 10) -> list[Turn]:
-    """The newest `limit` turns for a session, returned oldest-first for the model."""
+async def load_recent(
+    session: AsyncSession, session_id: str, username: str | None = None, limit: int = 10
+) -> list[Turn]:
+    """The newest `limit` turns, oldest-first for the model. For a signed-in mother load by
+    username so her history follows her across sessions (US8.4.4); for a guest load by the
+    browser session id."""
+    if username:
+        where, params = "username = :uname", {"uname": username, "lim": limit}
+    else:
+        where, params = "session_id = :sid", {"sid": session_id, "lim": limit}
     rows = (
         await session.execute(
             text(
                 "SELECT role, content FROM ("
                 "  SELECT role, content, created_at, id FROM companion_message "
-                "  WHERE session_id = :sid ORDER BY created_at DESC, id DESC LIMIT :lim"
+                f"  WHERE {where} ORDER BY created_at DESC, id DESC LIMIT :lim"
                 ") t ORDER BY t.created_at ASC, t.id ASC"
             ),
-            {"sid": session_id, "lim": limit},
+            params,
         )
     ).all()
     return [Turn(r.role, r.content) for r in rows]

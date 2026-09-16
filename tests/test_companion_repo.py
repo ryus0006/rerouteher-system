@@ -35,6 +35,22 @@ async def test_load_recent_returns_turns_oldest_first():
     assert [(t.role, t.content) for t in out] == [("user", "hi"), ("assistant", "hello")]
 
 
+async def test_load_recent_by_username_when_signed_in():
+    session = FakeSession([FakeRow("user", "hi")])
+    await companion_repo.load_recent(session, "s1", username="aisha", limit=10)
+    stmt, params = session.executed[0]
+    assert "username = :uname" in stmt
+    assert params["uname"] == "aisha"
+
+
+async def test_load_recent_by_session_when_guest():
+    session = FakeSession([])
+    await companion_repo.load_recent(session, "s1", username=None, limit=10)
+    stmt, params = session.executed[0]
+    assert "session_id = :sid" in stmt
+    assert params["sid"] == "s1"
+
+
 async def test_save_turn_executes_insert_with_params():
     session = FakeSession([])
     await companion_repo.save_turn(session, "s1", "aisha", "user", "hi")

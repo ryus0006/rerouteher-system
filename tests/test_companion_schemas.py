@@ -21,6 +21,21 @@ def test_ask_request_reads_journey_cv_and_break_alias():
     assert req.journey.break_.duration_years == 3
 
 
+def test_journey_carries_employer_matches():
+    from app.schemas.companion import AskRequest
+
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        journey={
+            "employerMatches": [
+                {"name": "Maybank", "met": ["flexible_work"], "unmet": ["parental_support"]}
+            ]
+        },
+    )
+    assert req.journey.employerMatches[0]["name"] == "Maybank"
+
+
 def test_journey_carries_role_skills_offered_flag():
     from app.schemas.companion import AskRequest
 

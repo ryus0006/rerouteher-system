@@ -11,7 +11,7 @@ class FakeRepo:
     def __init__(self):
         self.saved = []
 
-    async def load_recent(self, session, session_id, limit=10):
+    async def load_recent(self, session, session_id, username=None, limit=10):
         return []
 
     async def save_turn(self, session, session_id, username, role, content, tokens_in=0, tokens_out=0):
@@ -354,10 +354,24 @@ async def test_token_usage_summed_across_calls_and_recorded_on_answer():
     assert user_row["tokens_in"] == 0 and user_row["tokens_out"] == 0
 
 
+async def test_ask_loads_history_by_username_when_signed_in():
+    seen = {}
+
+    class Repo(FakeRepo):
+        async def load_recent(self, session, session_id, username=None, limit=10):
+            seen["username"] = username
+            return []
+
+    llm = ScriptedLlm([_text("ok")])
+    svc = CompanionService(llm=llm, repo=Repo())
+    await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username="aisha")
+    assert seen["username"] == "aisha"
+
+
 async def test_history_is_loaded_into_contents():
     repo = FakeRepo()
 
-    async def two_turns(session, session_id, limit=10):
+    async def two_turns(session, session_id, username=None, limit=10):
         from app.repositories.companion import Turn
 
         return [Turn("user", "earlier q"), Turn("assistant", "earlier a")]
@@ -396,12 +410,68 @@ async def test_point_to_step_returns_learning_cta():
     assert len(llm.calls) == 2  # tool round-trip
 
 
+async def test_point_to_step_supports_more_steps():
+    for step, to in [
+        ("snapshot", "/diagnostic/snapshot"),
+        ("gap", "/diagnostic/gap"),
+        ("employers", "/plan/employers/matches"),
+    ]:
+        llm = ScriptedLlm([_fn_step(step), _text("Here you go.")])
+        svc = CompanionService(llm=llm, repo=FakeRepo())
+        resp = await svc.ask(
+            AskRequest(question="what next?", session_id="s1", current_page="/diagnostic/snapshot"),
+            session=object(),
+            username=None,
+        )
+        assert resp.cta is not None and resp.cta.to == to
+
+
 async def test_unknown_step_yields_no_cta():
     repo = FakeRepo()
     llm = ScriptedLlm([_fn_step("nonsense"), _text("Here is some help.")])
     svc = CompanionService(llm=llm, repo=repo)
     resp = await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
     assert resp.cta is None
+
+
+async def test_employer_matches_injected_when_present():
+    repo = FakeRepo()
+    llm = ScriptedLlm([_text("Maybank matches your flexible work need.")])
+    svc = CompanionService(llm=llm, repo=repo)
+    await svc.ask(
+        AskRequest(
+            question="why does Maybank match me?",
+            session_id="s1",
+            journey={
+                "employerMatches": [
+                    {
+                        "name": "Maybank",
+                        "met": ["flexible_work", "childcare_support"],
+                        "unmet": ["parental_support"],
+                        "report": {
+                            "label": "Maybank Sustainability Report 2023",
+                            "url": "https://x/r.pdf",
+                        },
+                    }
+                ]
+            },
+        ),
+        session=object(),
+        username=None,
+    )
+    system = llm.calls[0]["system"]
+    assert "Maybank" in system
+    assert "flexible work" in system  # met priority, prettified
+    assert "parental support" in system  # unmet -> not disclosed
+    assert "Maybank Sustainability Report 2023" in system  # report cited
+
+
+async def test_no_employer_note_when_absent():
+    repo = FakeRepo()
+    llm = ScriptedLlm([_text("ok")])
+    svc = CompanionService(llm=llm, repo=repo)
+    await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
+    assert "her employer matches:" not in llm.calls[0]["system"].lower()
 
 
 async def test_results_summary_is_injected_when_present():
