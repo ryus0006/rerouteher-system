@@ -103,30 +103,56 @@ def _provider_slug(name: str) -> str:
     return f"web-{slug}" if slug else "web"
 
 
-async def skills_missing_resources(session: AsyncSession, skill_ids: list[str]) -> list[str]:
-    """Of the given skill ids, those with no curated learning_resource_skill row.
+@dataclass
+class SkillFillState:
+    """What a skill already has, so the fill can top it up to the target and never
+    duplicate a stored resource."""
+    total: int  # all resources (curated + AI-filled)
+    ai_count: int  # AI-filled resources only, so new ids continue past them
+    urls: list[str]  # every stored URL, to skip on a re-fill
 
-    Input order is preserved so the fill honours the gap's uplift ordering.
+
+async def learning_fill_state(
+    session: AsyncSession, skill_ids: list[str]
+) -> dict[str, SkillFillState]:
+    """Per skill: how many resources it has, how many are AI-filled, and their URLs.
+
+    Skills with no resources are absent from the result (state defaults to empty).
     """
     if not skill_ids:
-        return []
+        return {}
     rows = (
         await session.execute(
-            text("SELECT skill_id FROM learning_resource_skill WHERE skill_id = ANY(:ids)"),
+            text(
+                "SELECT lrs.skill_id, lr.resource_id, lr.url "
+                "FROM learning_resource_skill lrs "
+                "JOIN learning_resource lr ON lr.resource_id = lrs.resource_id "
+                "WHERE lrs.skill_id = ANY(:ids)"
+            ),
             {"ids": skill_ids},
         )
     ).all()
-    have = {str(r.skill_id) for r in rows}
-    return [s for s in skill_ids if s not in have]
+    state: dict[str, SkillFillState] = {}
+    for r in rows:
+        st = state.setdefault(str(r.skill_id), SkillFillState(total=0, ai_count=0, urls=[]))
+        st.total += 1
+        if r.url:
+            st.urls.append(r.url)
+        if str(r.resource_id).startswith("ai-"):
+            st.ai_count += 1
+    return state
 
 
-async def upsert_filled_resource(session: AsyncSession, chosen) -> None:
+async def upsert_filled_resource(session: AsyncSession, chosen, index: int = 1) -> None:
     """Persist one AI-filled resource: provider + learning_resource + link.
 
-    Idempotent per skill (resource_id = 'ai-<skill_id>', ON CONFLICT DO NOTHING).
-    The provider row is ensured by name, then the actual provider_id is read back
-    so the FK always points at an existing row (an existing provider may use a
-    different id than our slug). Caller owns the transaction (commit).
+    A skill can hold up to two AI-filled resources, so the id is numbered by
+    position (resource_id = 'ai-<skill_id>-<index>'), ON CONFLICT DO NOTHING. The
+    caller continues the index past existing AI rows and excludes already-stored
+    URLs, so a top-up on a recompute neither collides nor duplicates. The provider
+    row is ensured by name, then the actual provider_id is read back so the FK always
+    points at an existing row (an existing provider may use a different id than our
+    slug). Caller owns the transaction (commit).
     """
     slug = _provider_slug(chosen.provider_name)
     await session.execute(
@@ -144,7 +170,7 @@ async def upsert_filled_resource(session: AsyncSession, chosen) -> None:
     ).first()
     provider_id = str(row.provider_id) if row else slug
 
-    resource_id = f"ai-{chosen.skill_id}"
+    resource_id = f"ai-{chosen.skill_id}-{index}"
     # asyncpg encodes a timedelta to the interval column directly; a string fails.
     duration = timedelta(minutes=chosen.duration_minutes) if chosen.duration_minutes else None
     await session.execute(

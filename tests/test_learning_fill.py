@@ -154,6 +154,42 @@ async def test_find_resource_swallows_llm_error(monkeypatch):
     assert await svc.find_resource("s1", "SQL") is None
 
 
+async def test_find_resources_returns_two_of_different_types(monkeypatch):
+    llm = FakeLlm([
+        '[{"url":"https://good.com/sql","title":"A","provider_name":"P","delivery_mode":"Article"},'
+        ' {"url":"https://other.com/x","title":"B","provider_name":"P","delivery_mode":"Video"}]',
+    ])
+    svc = _svc(llm, FakeSearcher(_RESULTS), monkeypatch)
+    out = await svc.find_resources("s1", "SQL")
+    assert [r.url for r in out] == ["https://good.com/sql", "https://other.com/x"]
+    assert {r.delivery_mode for r in out} == {"Article", "Video"}
+
+
+async def test_find_resources_falls_back_to_same_type_when_only_one_type(monkeypatch):
+    # Both reachable picks are Articles: prefer variety, but fill 2 anyway.
+    llm = FakeLlm([
+        '[{"url":"https://good.com/sql","title":"A","provider_name":"P","delivery_mode":"Article"},'
+        ' {"url":"https://other.com/x","title":"B","provider_name":"P","delivery_mode":"Article"}]',
+    ])
+    svc = _svc(llm, FakeSearcher(_RESULTS), monkeypatch)
+    out = await svc.find_resources("s1", "SQL")
+    assert [r.url for r in out] == ["https://good.com/sql", "https://other.com/x"]
+    assert [r.delivery_mode for r in out] == ["Article", "Article"]
+
+
+async def test_find_resources_returns_one_when_only_one_reachable(monkeypatch):
+    llm = FakeLlm([
+        '[{"url":"https://good.com/sql","title":"A","provider_name":"P","delivery_mode":"Article"},'
+        ' {"url":"https://other.com/x","title":"B","provider_name":"P","delivery_mode":"Video"}]',
+    ])
+    svc = LearningFillService(llm, FakeSearcher(_RESULTS))
+    async def only_good(self, url):
+        return url == "https://good.com/sql"
+    monkeypatch.setattr(LearningFillService, "_verify_url", only_good)
+    out = await svc.find_resources("s1", "SQL")
+    assert len(out) == 1 and out[0].url == "https://good.com/sql"
+
+
 def test_disabled_without_llm_or_searcher():
     assert LearningFillService(None, FakeSearcher(_RESULTS)).enabled is False
     assert LearningFillService(FakeLlm([]), None).enabled is False
@@ -195,30 +231,64 @@ class _FakeDbSession:
         pass
 
 
-async def test_fill_for_skills_persists_only_missing(monkeypatch):
+async def test_fill_for_skills_tops_up_only_below_target(monkeypatch):
     import app.services.learning_fill as mod
-    from app.repositories.learning import SkillLabel
+    from app.repositories.learning import SkillFillState, SkillLabel
 
     monkeypatch.setattr(mod, "SessionLocal", lambda: _FakeDbSession())
 
-    async def fake_missing(session, ids):
-        return ["s2"]
+    async def fake_state(session, ids):
+        # s1 already at the target (skipped); s2 has none (filled).
+        return {"s1": SkillFillState(total=2, ai_count=2, urls=["u1", "u2"])}
     async def fake_labels(session, ids):
         return {"s2": SkillLabel("s2", "Excel", "spreadsheets")}
     persisted = []
-    async def fake_upsert(session, chosen):
+    async def fake_upsert(session, chosen, index=1):
         persisted.append(chosen)
-    monkeypatch.setattr(mod.learning_repo, "skills_missing_resources", fake_missing)
+    monkeypatch.setattr(mod.learning_repo, "learning_fill_state", fake_state)
     monkeypatch.setattr(mod.learning_repo, "get_skill_labels", fake_labels)
     monkeypatch.setattr(mod.learning_repo, "upsert_filled_resource", fake_upsert)
 
     svc = LearningFillService(FakeLlm([]), FakeSearcher(_RESULTS))
-    async def fake_find(self, skill_id, name, definition=None):
-        return ChosenResource(skill_id, "T", "https://ok.com", "P", None, None, None, None, 0.5, None)
-    monkeypatch.setattr(LearningFillService, "find_resource", fake_find)
+    async def fake_find(self, skill_id, name, definition=None, *, exclude_urls=None, limit=2):
+        return [ChosenResource(skill_id, "T", "https://ok.com", "P", "Article", None, None, None, 0.5, None)]
+    monkeypatch.setattr(LearningFillService, "find_resources", fake_find)
 
     await svc.fill_for_skills(["s1", "s2"])
     assert [c.skill_id for c in persisted] == ["s2"]
+
+
+async def test_fill_for_skills_tops_up_partial_skill_with_continuing_index(monkeypatch):
+    import app.services.learning_fill as mod
+    from app.repositories.learning import SkillFillState, SkillLabel
+
+    monkeypatch.setattr(mod, "SessionLocal", lambda: _FakeDbSession())
+
+    async def fake_state(session, ids):
+        # s3 already has one AI resource; top-up needs one more, id index continues at 2.
+        return {"s3": SkillFillState(total=1, ai_count=1, urls=["https://have.com"])}
+    async def fake_labels(session, ids):
+        return {"s3": SkillLabel("s3", "SQL", None)}
+    calls = []
+    async def fake_upsert(session, chosen, index=1):
+        calls.append((chosen.url, index))
+    seen_kwargs = {}
+    monkeypatch.setattr(mod.learning_repo, "learning_fill_state", fake_state)
+    monkeypatch.setattr(mod.learning_repo, "get_skill_labels", fake_labels)
+    monkeypatch.setattr(mod.learning_repo, "upsert_filled_resource", fake_upsert)
+
+    svc = LearningFillService(FakeLlm([]), FakeSearcher(_RESULTS))
+    async def fake_find(self, skill_id, name, definition=None, *, exclude_urls=None, limit=2):
+        seen_kwargs["exclude_urls"] = exclude_urls
+        seen_kwargs["limit"] = limit
+        return [ChosenResource(skill_id, "T", "https://new.com", "P", "Video", None, None, None, None, None)]
+    monkeypatch.setattr(LearningFillService, "find_resources", fake_find)
+
+    await svc.fill_for_skills(["s3"])
+    # topped up: existing URL excluded, only one more requested, new id index = 2.
+    assert seen_kwargs["exclude_urls"] == {"https://have.com"}
+    assert seen_kwargs["limit"] == 1
+    assert calls == [("https://new.com", 2)]
 
 
 async def test_fill_for_skills_isolates_per_skill_errors(monkeypatch):
@@ -227,23 +297,23 @@ async def test_fill_for_skills_isolates_per_skill_errors(monkeypatch):
 
     monkeypatch.setattr(mod, "SessionLocal", lambda: _FakeDbSession())
 
-    async def fake_missing(session, ids):
-        return ["s1", "s2"]
+    async def fake_state(session, ids):
+        return {}  # both skills empty -> both to fill
     async def fake_labels(session, ids):
         return {"s1": SkillLabel("s1", "A", None), "s2": SkillLabel("s2", "B", None)}
     persisted = []
-    async def fake_upsert(session, chosen):
+    async def fake_upsert(session, chosen, index=1):
         persisted.append(chosen)
-    monkeypatch.setattr(mod.learning_repo, "skills_missing_resources", fake_missing)
+    monkeypatch.setattr(mod.learning_repo, "learning_fill_state", fake_state)
     monkeypatch.setattr(mod.learning_repo, "get_skill_labels", fake_labels)
     monkeypatch.setattr(mod.learning_repo, "upsert_filled_resource", fake_upsert)
 
     svc = LearningFillService(FakeLlm([]), FakeSearcher(_RESULTS))
-    async def flaky_find(self, skill_id, name, definition=None):
+    async def flaky_find(self, skill_id, name, definition=None, *, exclude_urls=None, limit=2):
         if skill_id == "s1":
             raise RuntimeError("boom")
-        return ChosenResource(skill_id, "T", "https://ok.com", "P", None, None, None, None, None, None)
-    monkeypatch.setattr(LearningFillService, "find_resource", flaky_find)
+        return [ChosenResource(skill_id, "T", "https://ok.com", "P", "Video", None, None, None, None, None)]
+    monkeypatch.setattr(LearningFillService, "find_resources", flaky_find)
 
     await svc.fill_for_skills(["s1", "s2"])
     assert [c.skill_id for c in persisted] == ["s2"]

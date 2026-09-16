@@ -25,22 +25,49 @@ from app.services.tavily import SearchResult, TavilyError, TavilySearcher
 logger = logging.getLogger("rerouteher")
 
 _PICK_SYSTEM = (
-    "You are given a job skill (with its definition) and a list of web search "
-    "results (title, url, snippet). Rank the FREE online courses or tutorials that "
-    "build this skill as defined, best first. You MUST use urls from the provided "
-    "results, do not invent any. Return ONLY a JSON array (no prose, no markdown "
-    "fences) of up to 3 objects, best first, each with keys: title (string), url "
-    "(string, one of the results), provider_name (string), delivery_mode (one of "
-    "Course, Video, Article), duration_minutes (integer or null), level (Beginner, "
-    "Intermediate, Advanced, or null), licence_note (string or null), relevance "
-    "(number 0 to 1), evidence_note (one sentence on why it builds this skill). If "
-    "none of the results are a free skill-building resource, return an empty array []."
+    "You are given a job skill, its definition, and a list of web search results "
+    "(title, url, snippet). The skill name and definition together define the FULL "
+    "scope you must cover. Some skills bundle several areas (for example 'scientific, "
+    "academic or technical writing'); treat the whole scope as what matters. Rank the "
+    "FREE online courses or tutorials that best build this skill, best first, and "
+    "PREFER a resource that covers the skill's central theme broadly over one that "
+    "covers only a narrow slice of it. Do not pick a resource that addresses only a "
+    "minor fragment of the skill when a broader-coverage free option exists. You MUST "
+    "use urls from the provided results, do not invent any. Return ONLY a JSON array "
+    "(no prose, no markdown fences) of up to 3 objects, best first, each with keys: "
+    "title (string), url (string, one of the results), provider_name (string), "
+    "delivery_mode (one of Course, Video, Article), duration_minutes (integer or "
+    "null), level (Beginner, Intermediate, Advanced, or null), licence_note (string "
+    "or null), relevance (number 0 to 1), evidence_note (one sentence that states "
+    "honestly how much of the skill's scope the resource covers). If none of the "
+    "results are a free skill-building resource, return an empty array []."
 )
 
 # A browser-like UA and the statuses that mean "reachable but bot-guarded": a real
 # page that refuses a bare programmatic request (seen with MIT Sloan in testing).
 _BROWSER_UA = "Mozilla/5.0 (compatible; ReRouteHer/1.0; +learning-resource-check)"
 _REACHABLE_GUARDED = {401, 403, 405, 429}
+
+# Fill up to this many resources per skill, each a different delivery format, so the
+# learning page's Articles/Videos filter has something in more than one tab.
+_MAX_RESOURCES_PER_SKILL = 2
+
+# The three canonical delivery formats the learning page filters on. The LLM is asked
+# for one of these, but does not always comply ("online", "Tutorial", ...), so every
+# stored value is normalised to keep the format filter clean.
+_KNOWN_FORMATS = {"article": "Article", "video": "Video", "course": "Course"}
+
+
+def _canonical_format(delivery_mode: "str | None", url: str) -> str:
+    mode = (delivery_mode or "").strip().lower()
+    if mode in _KNOWN_FORMATS:
+        return _KNOWN_FORMATS[mode]
+    lowered_url = (url or "").lower()
+    if "youtube.com" in lowered_url or "youtu.be" in lowered_url or "vimeo.com" in lowered_url or "video" in mode:
+        return "Video"
+    if "article" in mode or "blog" in mode or "guide" in mode:
+        return "Article"
+    return "Course"
 
 # How many gap skills to fill: exactly the ones the learning page surfaces. This
 # mirrors the UI's MAX_FOCUS_AREAS (components/gap/FocusAreaList.jsx). A gap can
@@ -227,26 +254,65 @@ class LearningFillService:
             ranked.append(choice)
         return ranked
 
-    async def find_resource(self, skill_id: str, skill_name: str,
-                            definition: "str | None" = None) -> "ChosenResource | None":
-        """Search, rank free resources with one Gemini call, then walk the shortlist
-        and return the first URL that verifies. No DB writes."""
+    async def _verified_ranked(self, skill_id: str, skill_name: str,
+                               definition: "str | None") -> list[ChosenResource]:
+        """Search, rank with one Gemini call, then walk the shortlist and keep the
+        URLs that verify, in rank order. Each kept resource has its delivery_mode
+        normalised and its skill_id set. No DB writes."""
         if not self._enabled:
-            return None
+            return []
         query = f"free online course tutorial: {skill_name}. {definition or ''}".strip()
         try:
             results = await self._searcher.search(query, self._candidates)
         except TavilyError as exc:
             logger.info("learning-fill search failed for '%s' (%s)", skill_name, exc)
-            return None
+            return []
         if not results:
-            return None
+            return []
+        verified: list[ChosenResource] = []
         for choice in await self._rank(skill_name, definition, results):
             if await self._verify_url(choice.url):
                 choice.skill_id = skill_id
-                return choice
-        logger.info("learning-fill found no reachable resource for '%s'", skill_name)
-        return None
+                choice.delivery_mode = _canonical_format(choice.delivery_mode, choice.url)
+                verified.append(choice)
+        if not verified:
+            logger.info("learning-fill found no reachable resource for '%s'", skill_name)
+        return verified
+
+    async def find_resource(self, skill_id: str, skill_name: str,
+                            definition: "str | None" = None) -> "ChosenResource | None":
+        """The single best reachable free resource for a skill, or None."""
+        ranked = await self._verified_ranked(skill_id, skill_name, definition)
+        return ranked[0] if ranked else None
+
+    async def find_resources(self, skill_id: str, skill_name: str,
+                             definition: "str | None" = None, *,
+                             exclude_urls: "set[str] | None" = None,
+                             limit: int = _MAX_RESOURCES_PER_SKILL) -> list[ChosenResource]:
+        """Up to `limit` reachable free resources, best first, PREFERRING a second of
+        a different delivery format (for example an article and a video) so the
+        learning page's format filter is useful. When only one format is reachable,
+        fall back to the next best resource of the same format rather than leaving one
+        card. `exclude_urls` are skipped so a top-up never re-stores an existing URL."""
+        if limit <= 0:
+            return []
+        exclude = exclude_urls or set()
+        ranked = [r for r in await self._verified_ranked(skill_id, skill_name, definition)
+                  if r.url not in exclude]
+        if not ranked:
+            return []
+        chosen: list[ChosenResource] = [ranked[0]]
+        formats_seen = {ranked[0].delivery_mode}
+        # Different format first, then backfill with the next best of any format.
+        for pool in ([r for r in ranked[1:] if r.delivery_mode not in formats_seen], ranked[1:]):
+            for resource in pool:
+                if len(chosen) >= limit:
+                    break
+                if resource in chosen:
+                    continue
+                chosen.append(resource)
+                formats_seen.add(resource.delivery_mode)
+        return chosen[:limit]
 
     async def fill_for_skills(self, skill_ids: list[str]) -> None:
         """Background entry point: fill any of these skills with no curated resource.
@@ -259,21 +325,33 @@ class LearningFillService:
         if not self._enabled or not skill_ids:
             return
         async with SessionLocal() as session:
-            missing = await learning_repo.skills_missing_resources(session, skill_ids)
-            if not missing:
+            state = await learning_repo.learning_fill_state(session, skill_ids)
+            # Top up any skill below the target, including on a recompute.
+            to_fill = [s for s in skill_ids
+                       if (state[s].total if s in state else 0) < _MAX_RESOURCES_PER_SKILL]
+            if not to_fill:
                 return
-            labels = await learning_repo.get_skill_labels(session, missing)
-        for skill_id in missing:
+            labels = await learning_repo.get_skill_labels(session, to_fill)
+        for skill_id in to_fill:
             label = labels.get(skill_id)
             if label is None:
                 continue
+            st = state.get(skill_id)
+            ai_count = st.ai_count if st else 0
+            needed = _MAX_RESOURCES_PER_SKILL - (st.total if st else 0)
+            exclude_urls = set(st.urls) if st else set()
             try:
-                chosen = await self.find_resource(skill_id, label.name, label.definition)
-                if chosen is None:
+                resources = await self.find_resources(
+                    skill_id, label.name, label.definition,
+                    exclude_urls=exclude_urls, limit=needed,
+                )
+                if not resources:
                     continue
                 async with SessionLocal() as session:
-                    await learning_repo.upsert_filled_resource(session, chosen)
+                    # New ids continue past existing AI rows so a top-up never collides.
+                    for offset, resource in enumerate(resources):
+                        await learning_repo.upsert_filled_resource(session, resource, ai_count + 1 + offset)
                     await session.commit()
-                logger.info("learning-fill persisted '%s' for skill %s", chosen.url, skill_id)
+                logger.info("learning-fill added %d resource(s) to skill %s", len(resources), skill_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("learning-fill failed for skill %s (%s)", skill_id, exc)
