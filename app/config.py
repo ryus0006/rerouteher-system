@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/rerouteher"
-    cors_origins: str = "http://localhost:5173"
+    # Iteration 2 UI runs on 5174; 5173 kept so iteration 1 UI can also reach it.
+    cors_origins: str = "http://localhost:5173,http://localhost:5174"
 
     # Local vendored model directory (checked into the repo). Loaded by path so there
     # is no Hugging Face Hub lookup at startup.
@@ -36,6 +37,54 @@ class Settings(BaseSettings):
     ai_exposure_high: float = 0.2
 
     max_cv_bytes: int = 10 * 1024 * 1024
+
+    # Session cookie (Starlette SessionMiddleware). SESSION_SECRET signs the cookie;
+    # set a strong random value in every deployed environment.
+    session_secret: str = "dev-insecure-change-me"
+    session_https_only: bool = False  # True behind HTTPS in production
+    session_same_site: str = "lax"  # "none" (with https_only) for cross-site prod
+
+    # E8 AI Companion (Gemini over direct HTTP, no SDK). GEMINI_API_KEY is read from
+    # the environment / .env; without it the companion degrades to "not available".
+    # gemini_model is verified against the list-models API, not assumed.
+    gemini_api_key: str = ""
+    # Fallback keys: when the active key is rate-limited (HTTP 429), the client
+    # rotates to the next non-empty one. Set as many as you have quota for.
+    gemini_api_key_2: str = ""
+    gemini_api_key_3: str = ""
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_timeout_s: float = 30.0
+
+    # E6 on-demand learning fill (Tavily search + Gemini picks one free resource).
+    learning_fill_enabled: bool = True
+    learning_fill_url_timeout_s: float = 6.0
+    # Web search for the fill (Tavily official API). Empty -> fill disabled.
+    # Backup keys rotate on a rate-limit (HTTP 429), same as the Gemini keys.
+    tavily_api_key: str = ""
+    tavily_api_key_2: str = ""
+    tavily_api_key_3: str = ""
+    tavily_base_url: str = "https://api.tavily.com"
+    tavily_timeout_s: float = 20.0
+    learning_fill_candidates: int = 6
+
+    @property
+    def gemini_api_keys(self) -> list[str]:
+        """Active key first, then fallbacks, skipping any that are unset."""
+        return [
+            k for k in (self.gemini_api_key, self.gemini_api_key_2, self.gemini_api_key_3) if k
+        ]
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.gemini_api_keys)
+
+    @property
+    def tavily_api_keys(self) -> list[str]:
+        """Active key first, then backups, skipping any that are unset."""
+        return [
+            k for k in (self.tavily_api_key, self.tavily_api_key_2, self.tavily_api_key_3) if k
+        ]
 
     @property
     def cors_origin_list(self) -> list[str]:

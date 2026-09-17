@@ -24,3 +24,7 @@ GEMINI.md
 .cursorrules
 .github/copilot-instructions.md
 .aider*
+
+# DB data dump from the db team: too large for GitHub (>100MB) and contains
+# reference + training/resume data. Obtain it from the db team and place at db/02_data.sql.
+db/02_data.sql

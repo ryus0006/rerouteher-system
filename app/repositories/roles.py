@@ -111,6 +111,35 @@ async def get_role_with_skills_by_id(session: AsyncSession, role_id: str) -> Rol
     return RoleWithSkills(role.role_id, role.role_title, role.ai_exposure, skills)
 
 
+async def get_distinctive_role_skills(
+    session: AsyncSession, role_id: str, limit: int, exclude_skill_ids: list[str] | None = None
+) -> list[RoleSkillRow]:
+    """Role skills ranked by importance weighted by how distinctive the skill is to this
+    role: importance * ln(total_roles / roles_with_skill). Recognisable role-specific skills
+    lead; near-universal skills (in most roles) fall to ~0 and drop off the top. Excludes
+    ids she already has. Bounded to this role."""
+    rows = (
+        await session.execute(
+            text(
+                "WITH df AS ("
+                "  SELECT skill_id, count(DISTINCT role_id) AS n FROM role_skills GROUP BY skill_id"
+                "), total AS (SELECT count(DISTINCT role_id)::float AS t FROM role_skills) "
+                "SELECT rs.skill_id, rs.skill_name, rs.skill_type, rs.importance "
+                "FROM role_skills rs JOIN df ON df.skill_id = rs.skill_id "
+                "WHERE rs.role_id = :rid AND NOT (rs.skill_id = ANY(:excl)) "
+                "ORDER BY rs.importance * ln((SELECT t FROM total) / df.n) DESC, "
+                "rs.importance DESC, rs.skill_name "
+                "LIMIT :lim"
+            ),
+            {"rid": role_id, "excl": exclude_skill_ids or [], "lim": limit},
+        )
+    ).all()
+    return [
+        RoleSkillRow(str(r.skill_id), r.skill_name, r.skill_type, float(r.importance))
+        for r in rows
+    ]
+
+
 async def best_similarity_for_role(
     session: AsyncSession, role_id: str, user_skill_ids: list[str]
 ) -> dict[str, float]:

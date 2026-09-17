@@ -4,20 +4,29 @@ Models and reference-derived assets load once at startup (lifespan) and live on
 app.state so requests have no cold start. Model loading is resilient: if an ML asset
 is missing, the app still boots and the affected endpoint degrades at call time.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import cv, gap, snapshot
+from app.api import account, companion, cv, employers, gap, learning, snapshot
 from app.config import get_settings
 from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.db import SessionLocal
 from app.repositories import skills as skills_repo
+from app.services.account import AccountService
 from app.services.cv_extractor import CVExtractor
 from app.services.embedder import Embedder
+from app.services.companion import CompanionService
+from app.services.employers import EmployerService
 from app.services.gap import GapService
+from app.services.learning import LearningService
+from app.services.learning_fill import LearningFillService
+from app.services.llm import GeminiClient
+from app.services.tavily import TavilySearcher
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.reranker import CrossEncoderReranker
 from app.services.snapshot import SnapshotService
@@ -52,15 +61,26 @@ async def lifespan(app: FastAPI):
 
     # 3. spaCy pipeline + alias dictionary.
     nlp = None
-    alias_pairs: list[tuple[str, str]] = []
     try:
         import spacy
 
         nlp = spacy.load("en_core_web_sm")
-        async with SessionLocal() as session:
-            alias_pairs = await skills_repo.load_alias_dictionary(session)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("spaCy/alias dictionary not loaded (%s); CV parsing degraded", exc, exc_info=True)
+        logger.warning("spaCy not loaded (%s); CV parsing degraded", exc, exc_info=True)
+
+    # The database can still be finishing its own startup when the app boots, so retry
+    # this one read rather than degrade to an empty alias dictionary on a transient miss.
+    alias_pairs: list[tuple[str, str]] = []
+    for attempt in range(1, 11):
+        try:
+            async with SessionLocal() as session:
+                alias_pairs = await skills_repo.load_alias_dictionary(session)
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 10:
+                logger.warning("alias dictionary not loaded after retries (%s); CV parsing degraded", exc)
+            else:
+                await asyncio.sleep(2)
 
     skill_dictionary = sorted({term for _, term in alias_pairs})
 
@@ -73,14 +93,33 @@ async def lifespan(app: FastAPI):
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher, reranker=reranker
     )
     app.state.gap_service = GapService(settings=settings)
+    # One Gemini client is shared by the companion and the learning fill.
+    llm = GeminiClient.from_settings(settings)
+    # Companion resolves a self-declared occupation to a role via the snapshot service
+    # (same embedding + rerank path), so it is wired here where that service exists.
+    app.state.companion_service = CompanionService(
+        llm=llm,
+        role_resolver=app.state.snapshot_service,
+    )
+    # E6 on-demand learning fill: Tavily search + Gemini pick, run in the background
+    # after a gap is computed. Disabled (degrades to the YouTube fallback) if either
+    # client is unavailable or learning_fill_enabled is false.
+    app.state.learning_fill_service = LearningFillService(
+        llm,
+        TavilySearcher.from_settings(settings),
+        enabled=settings.learning_fill_enabled,
+        url_timeout_s=settings.learning_fill_url_timeout_s,
+        candidates=settings.learning_fill_candidates,
+    )
 
     logger.info(
-        "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d",
+        "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d learning_fill=%s",
         embedder is not None,
         tfidf_matcher is not None,
         reranker.model_id if reranker else None,
         nlp is not None,
         len(skill_dictionary),
+        app.state.learning_fill_service.enabled,
     )
 
     yield
@@ -90,19 +129,40 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="ReRouteHer API", version="0.1.0", lifespan=lifespan)
 
-    # Allow the browser client to call the API directly.
+    # Allow the browser client to call the API directly. Credentials are on so the
+    # session cookie set by the account endpoints rides with subsequent requests.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    # Signed session cookie carries the signed-in username (E5).
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret,
+        https_only=settings.session_https_only,
+        same_site=settings.session_same_site,
+    )
+
     app.add_middleware(RequestLoggingMiddleware)
+
+    # Stateless services, so they are wired here rather than in lifespan.
+    app.state.account_service = AccountService()
+    app.state.learning_service = LearningService()
+    app.state.employer_service = EmployerService()
+    # companion_service is wired in the lifespan: it needs snapshot_service as its
+    # role resolver, which is only built there.
 
     app.include_router(cv.router)
     app.include_router(snapshot.router)
     app.include_router(gap.router)
+    app.include_router(account.router)
+    app.include_router(learning.router)
+    app.include_router(employers.router)
+    app.include_router(companion.router)
 
     @app.get("/api/health", tags=["meta"])
     async def health():

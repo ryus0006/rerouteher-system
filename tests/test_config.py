@@ -10,3 +10,10 @@ def test_rerank_defaults_and_model_list():
     ids = s.rerank_model_id_list
     assert ids == ["models/ms-marco-MiniLM-L6-v2"]  # vendored local path, loaded offline
     assert all(i.strip() == i and i for i in ids)
+
+
+def test_session_cookie_defaults():
+    s = Settings()
+    assert s.session_secret  # non-empty
+    assert s.session_https_only is False
+    assert s.session_same_site == "lax"

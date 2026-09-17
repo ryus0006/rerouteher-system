@@ -31,6 +31,39 @@ class FakeSession:
         return FakeResult(self._rows)
 
 
+class DistinctiveRow:
+    def __init__(self, skill_id, skill_name, skill_type, importance):
+        self.skill_id = skill_id
+        self.skill_name = skill_name
+        self.skill_type = skill_type
+        self.importance = importance
+
+
+async def test_get_distinctive_role_skills_threads_params_and_maps_rows():
+    rows = [
+        DistinctiveRow("s1", "Developing digital content", "digital", 95.0),
+        DistinctiveRow("s2", "Copyright and licences", "digital", 80.0),
+    ]
+    session = FakeSession(rows)
+    out = await roles_repo.get_distinctive_role_skills(
+        session, "R04", limit=15, exclude_skill_ids=["s9"]
+    )
+    stmt, params = session.executed[0]
+    # ranks by importance * idf, excludes given ids, bounded to the role
+    assert "ln((SELECT t FROM total) / df.n)" in stmt
+    assert "NOT (rs.skill_id = ANY(:excl))" in stmt
+    assert params["rid"] == "R04" and params["lim"] == 15 and params["excl"] == ["s9"]
+    assert [r.skill_id for r in out] == ["s1", "s2"]
+    assert out[0].skill_name == "Developing digital content"
+
+
+async def test_get_distinctive_role_skills_empty_exclude_defaults():
+    session = FakeSession([])
+    await roles_repo.get_distinctive_role_skills(session, "R04", limit=5)
+    _, params = session.executed[0]
+    assert params["excl"] == []
+
+
 async def test_get_rerank_texts_maps_id_to_title_plus_summary():
     rows = [
         FakeRow("r1", "Data Analyst", "Data Analyst. Analyses data to inform decisions."),
