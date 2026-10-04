@@ -285,6 +285,13 @@ CREATE TABLE IF NOT EXISTS rerouteher.interview_question
     anchor_json jsonb NOT NULL,
     rubric_json jsonb NOT NULL,
     review_status text COLLATE pg_catalog."default" NOT NULL,
+    interview_method_sources text COLLATE pg_catalog."default" NOT NULL,
+    authoring_method text COLLATE pg_catalog."default" NOT NULL,
+    answer_framework text COLLATE pg_catalog."default" NOT NULL,
+    answer_guidance text COLLATE pg_catalog."default" NOT NULL,
+    strong_evidence_signals text COLLATE pg_catalog."default" NOT NULL,
+    watch_out_for text COLLATE pg_catalog."default" NOT NULL,
+    follow_up_question text COLLATE pg_catalog."default" NOT NULL,
     CONSTRAINT interview_question_pkey PRIMARY KEY (question_id)
 );
 

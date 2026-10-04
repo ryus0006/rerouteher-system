@@ -26,6 +26,12 @@ from app.services.gap import GapService
 from app.services.interview import InterviewService
 from app.services.interview_feedback import InterviewFeedbackService
 from app.services.interview_privacy import TranscriptRedactor
+from app.services.job_search import JobSearchService
+from app.services.job_sources import (
+    FounditJobSource,
+    JoobleJobSource,
+    TavilyGeminiJobSource,
+)
 from app.services.learning import LearningService
 from app.services.learning_fill import LearningFillService
 from app.services.llm import GeminiClient
@@ -125,12 +131,30 @@ async def lifespan(app: FastAPI):
     # E6 on-demand learning fill: Tavily search + Gemini pick, run in the background
     # after a gap is computed. Disabled (degrades to the YouTube fallback) if either
     # client is unavailable or learning_fill_enabled is false.
+    tavily_searcher = TavilySearcher.from_settings(settings)
     app.state.learning_fill_service = LearningFillService(
         llm,
-        TavilySearcher.from_settings(settings),
+        tavily_searcher,
         enabled=settings.learning_fill_enabled,
         url_timeout_s=settings.learning_fill_url_timeout_s,
         candidates=settings.learning_fill_candidates,
+    )
+
+    job_sources = []
+    jooble = JoobleJobSource.from_settings(settings)
+    if jooble is not None:
+        job_sources.append(("jooble", jooble))
+    job_sources.append(("foundit", FounditJobSource(
+        base_url=settings.foundit_base_url,
+        timeout_s=settings.foundit_timeout_s,
+    )))
+    job_sources.append(("tavily", TavilyGeminiJobSource(tavily_searcher, llm)))
+    app.state.job_search_service = JobSearchService(
+        sources=job_sources,
+        location=settings.job_search_location,
+    )
+    app.state.employer_service = EmployerService(
+        job_search=app.state.job_search_service,
     )
 
     # E7 AI Interview Coach. A failed Whisper load degrades to an unavailable

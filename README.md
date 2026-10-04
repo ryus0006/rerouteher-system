@@ -100,6 +100,25 @@ All routes require a signed-in session (401 otherwise); a missing or another use
 
 The whisper.cpp model (`ggml-base.bin`) is downloaded + SHA-256-verified at image build time, not committed. `pytest` runs the full E7 suite without a DB, torch, or a real Gemini call (353/353 passing); `docker compose config` and the API image build both verified. A fresh Compose DB init (E7 table creation + the 7,592/10/44,902 seed counts against live Postgres) is not yet exercised here - `db/02_data.sql` (db team's base dump) is not present locally.
 
+## Endpoints (It3 addition: E9 - Workplace Needs & Employer Fit)
+
+| Endpoint | Story | Job |
+|---|---|---|
+| `POST /api/employers/match` | E9 / US9.4-9.5 | Fit matches plus the latest cached opening for the selected role |
+| `POST /api/employers/jobs/refresh/{role_id}` | E9 / US9.4-9.5 | Explicitly refresh role openings; public prototype endpoint |
+
+Job search is cache-first. A ready, empty, or temporarily unavailable result is stored for the role, and normal match requests do not automatically retry it. Use the refresh endpoint to request a new provider search. Provider failures return `503` with `status: temporarily_unavailable`; an unknown role returns `404`; successful ready and empty refreshes return `200`.
+
+Provider configuration is environment-only (never commit values):
+
+- `JOOBLE_API_KEY` and optional `JOOBLE_API_KEY_2`
+- `JOOBLE_BASE_URL`, `JOOBLE_TIMEOUT_S`
+- `FOUNDIT_BASE_URL`, `FOUNDIT_TIMEOUT_S`
+- `TAVILY_API_KEY` (and existing optional backup keys)
+- `GEMINI_API_KEY` (and existing optional backup keys)
+
+The provider chain sends only the cleaned target-role search title and `Malaysia`; no CV, journey, transcript, or other user PII is sent. foundit is an undocumented integration and may change or stop working. The provider data is filtered to exact case-insensitive tracked employer-name matches before persistence. The deterministic fixture for full-stack tests is `tests/fixtures/e9_job_search.sql`.
+
 ## Not in It1
 
 Employer Fit (E4 / US4.4-4.5) is deferred to Iteration 2. The `employers` and `role_sector_map` tables import but are not queried yet.

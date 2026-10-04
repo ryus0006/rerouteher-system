@@ -56,6 +56,8 @@ async def test_lifespan_wires_reranker_and_interview_dependencies(monkeypatch):
         assert isinstance(app.state.interview_service, InterviewService)
         assert app.state.interview_health["transcription_available"] is True
         assert isinstance(app.state.interview_health["feedback_available"], bool)
+        assert app.state.job_search_service is not None
+        assert app.state.employer_service._job_search is app.state.job_search_service
 
     assert captured.get("reranker") is sentinel
     assert app.state.snapshot_service is not None

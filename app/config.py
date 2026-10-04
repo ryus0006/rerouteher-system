@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     tavily_timeout_s: float = 20.0
     learning_fill_candidates: int = 6
 
+    # E9 role-specific job search. Credentials stay in environment/deployment
+    # secrets; the second Jooble key is used only as a 429 fallback.
+    job_search_location: str = "Malaysia"
+    jooble_api_key: str = ""
+    jooble_api_key_2: str = ""
+    jooble_base_url: str = "https://my.jooble.org/api"
+    jooble_timeout_s: float = 20.0
+    foundit_base_url: str = "https://www.foundit.my"
+    foundit_timeout_s: float = 20.0
+
     # E7 AI Interview Coach. Transcription runs fully offline (whisper.cpp, no network
     # call); the model file is downloaded and checksummed at image build time, not
     # committed to the repo (see Dockerfile). Loading degrades to unavailable rather
