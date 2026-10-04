@@ -11,6 +11,7 @@ import pytest
 
 import app.main as main_mod
 from app.services.interview import InterviewService
+from app.services.cv_generation import CvGenerationService
 from app.services.reranker import CrossEncoderReranker
 from app.services.transcription import WhisperTranscriber
 
@@ -54,6 +55,7 @@ async def test_lifespan_wires_reranker_and_interview_dependencies(monkeypatch):
     app = main_mod.create_app()
     async with main_mod.lifespan(app):
         assert isinstance(app.state.interview_service, InterviewService)
+        assert isinstance(app.state.cv_generation_service, CvGenerationService)
         assert app.state.interview_health["transcription_available"] is True
         assert isinstance(app.state.interview_health["feedback_available"], bool)
         assert app.state.job_search_service is not None
@@ -77,6 +79,7 @@ async def test_lifespan_degrades_when_whisper_unavailable(monkeypatch):
     async with main_mod.lifespan(app):
         # the app still boots; it degrades rather than failing startup
         assert app.state.interview_service is not None
+        assert isinstance(app.state.cv_generation_service, CvGenerationService)
         assert app.state.interview_health["transcription_available"] is False
 
 
