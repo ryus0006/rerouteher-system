@@ -11,6 +11,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# ca-certificates + curl: fetch the whisper model over HTTPS at build time. ffmpeg:
+# E7 audio normalisation at runtime (WhisperTranscriber shells out to it).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Python deps first for layer caching.
 # Install CPU-only torch up front so sentence-transformers does not pull the ~1GB
 # NVIDIA CUDA wheels (useless on CPU); the rest then sees torch already satisfied.
@@ -26,6 +32,15 @@ RUN python -m spacy download en_core_web_sm
 # ms-marco-MiniLM-L6-v2 cross-encoder reranker (~87MB). Copied straight in, so the
 # build performs no Hugging Face download and startup loads them from these paths.
 COPY models ./models
+
+# E7 whisper.cpp model (~148MB): downloaded and checksummed at build time rather than
+# committed to the repo. Multilingual ggml-base.bin, loaded by WhisperTranscriber at
+# runtime from app/config.py's whisper_model_path.
+RUN mkdir -p models/whisper \
+    && curl -fsSL -o models/whisper/ggml-base.bin \
+       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin \
+    && echo "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe  models/whisper/ggml-base.bin" \
+       | sha256sum -c -
 
 # Vendored TF-IDF occupation classifier (~25MB). Baked in so Tier 1 works on hosts
 # that do not mount the compose volumes (e.g. Coolify).

@@ -17,3 +17,13 @@ def test_session_cookie_defaults():
     assert s.session_secret  # non-empty
     assert s.session_https_only is False
     assert s.session_same_site == "lax"
+
+
+def test_interview_transcription_defaults():
+    s = Settings()
+    assert s.whisper_model_path == "models/whisper/ggml-base.bin"
+    assert s.whisper_threads == 4
+    assert s.interview_max_audio_bytes == 25 * 1024 * 1024
+    assert s.interview_max_audio_seconds == 300
+    assert s.interview_ffmpeg_timeout_s == 45.0
+    assert s.interview_content_retention_days == 30

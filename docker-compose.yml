@@ -13,8 +13,8 @@ services:
       - pgdata:/var/lib/postgresql
       # runs on first init only, in order: bootstrap (extension + schema), db-team base
       # schema, db-team data, our E5 account model change (for db-team review), our E6
-      # learning data fill, our E9 employer overlay, our E8 companion history, then
-      # finalize (turn FK back on).
+      # learning data fill, our E9 employer overlay, our E8 companion history, our E7
+      # interview coach schema + seed, then finalize (turn FK back on).
       - ./db/00_init_extensions_schemas.sql:/docker-entrypoint-initdb.d/00_init_extensions_schemas.sql:ro
       - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./db/02_data.sql:/docker-entrypoint-initdb.d/02_data.sql:ro
@@ -22,7 +22,11 @@ services:
       - ./db/04_e6_learning_seed.sql:/docker-entrypoint-initdb.d/04_e6_learning_seed.sql:ro
       - ./db/05_e9_employer_overlay.sql:/docker-entrypoint-initdb.d/05_e9_employer_overlay.sql:ro
       - ./db/06_e8_companion_history.sql:/docker-entrypoint-initdb.d/06_e8_companion_history.sql:ro
-      - ./db/07_finalize.sql:/docker-entrypoint-initdb.d/07_finalize.sql:ro
+      - ./db/e7_interview_evaluation_rubric.csv:/docker-entrypoint-initdb.d/e7_interview_evaluation_rubric.csv:ro
+      - ./db/interview_question.csv:/docker-entrypoint-initdb.d/interview_question.csv:ro
+      - ./db/e7_interview_question_rubric.csv:/docker-entrypoint-initdb.d/e7_interview_question_rubric.csv:ro
+      - ./db/07_e7_interview_coach.sql:/docker-entrypoint-initdb.d/07_e7_interview_coach.sql:ro
+      - ./db/08_finalize.sql:/docker-entrypoint-initdb.d/08_finalize.sql:ro
     healthcheck:
       # -h localhost forces a TCP probe. The image runs a temporary socket-only server
       # while it loads the init scripts; a plain pg_isready would report healthy during

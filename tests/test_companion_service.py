@@ -567,3 +567,50 @@ async def test_llm_error_degrades_gracefully_without_raising():
     resp = await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
     assert "trouble" in resp.answer.lower()
     assert resp.journey_update is None
+
+
+async def test_interview_note_grounds_on_question_transcript_feedback_and_coaching(monkeypatch):
+    import app.services.companion as companion_mod
+    from app.repositories.interview import QuestionCoaching
+
+    async def fake_coaching(session, question_id):
+        assert question_id == "GEN-001"
+        return QuestionCoaching(
+            question_id="GEN-001", role_id=None, question_text="Tell me about yourself.",
+            answer_framework="concise-summary",
+            answer_guidance="State your current focus and one evidence point.",
+            strong_evidence_signals="Specific context; clear contribution.",
+            watch_out_for="Generic answer.",
+            follow_up_question="Which part helps most?",
+        )
+
+    monkeypatch.setattr(companion_mod.interview_repo, "get_question_coaching", fake_coaching)
+
+    llm = ScriptedLlm([_text("Here is how to approach it.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo())
+    req = AskRequest(
+        question="How should I answer this?",
+        session_id="s1",
+        interview={
+            "question_id": "GEN-001", "question_text": "Tell me about yourself.",
+            "kind": "general", "transcript": "I led a small team.",
+            "feedback_summary": "Clear and relevant.",
+            "strengths": [{"title": "Relevance", "detail": "On topic."}],
+            "improvements": [{"title": "Add a result", "detail": "Say what changed."}],
+        },
+    )
+    await svc.ask(req, session=object(), username="aisha")
+
+    system = llm.calls[0]["system"]
+    assert "Tell me about yourself." in system       # the question
+    assert "I led a small team." in system           # her transcript
+    assert "Add a result" in system                  # her feedback
+    assert "concise-summary" in system               # coaching guidance (server-side)
+    assert "authoring_method" not in system.lower()  # authoring metadata never leaked
+
+
+async def test_no_interview_note_without_interview_context():
+    llm = ScriptedLlm([_text("hi")])
+    svc = CompanionService(llm=llm, repo=FakeRepo())
+    await svc.ask(AskRequest(question="hello", session_id="s1"), session=object(), username=None)
+    assert "Her latest answer transcript" not in llm.calls[0]["system"]

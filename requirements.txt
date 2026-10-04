@@ -15,6 +15,7 @@ scikit-learn==1.7.2
 joblib==1.5.3
 numpy
 python-dotenv
+pywhispercpp==1.5.1
 pytest
 pytest-asyncio
 httpx

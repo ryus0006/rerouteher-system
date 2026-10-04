@@ -1,4 +1,36 @@
-from app.schemas.companion import AskRequest, AskResponse, JourneyUpdate
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.companion import AskRequest, AskResponse, InterviewContextIn, JourneyUpdate
+
+
+def test_ask_request_interview_defaults_none():
+    req = AskRequest(question="hi", session_id="s1")
+    assert req.interview is None
+
+
+def test_interview_context_parses_feedback_items():
+    req = AskRequest(
+        question="How do I answer this?",
+        session_id="s1",
+        interview={
+            "question_id": "GEN-001",
+            "question_text": "Tell me about yourself.",
+            "kind": "general",
+            "transcript": "I led a small team.",
+            "feedback_summary": "Clear and relevant.",
+            "strengths": [{"title": "Relevance", "detail": "Stayed on topic."}],
+            "improvements": [{"title": "Add a result", "detail": "Say what changed."}],
+        },
+    )
+    assert req.interview.question_id == "GEN-001"
+    assert req.interview.strengths[0].title == "Relevance"
+    assert req.interview.improvements[0].detail == "Say what changed."
+
+
+def test_interview_context_requires_question_id():
+    with pytest.raises(ValidationError):
+        InterviewContextIn(question_text="no id")
 
 
 def test_ask_request_minimal():

@@ -68,6 +68,21 @@ class Settings(BaseSettings):
     tavily_timeout_s: float = 20.0
     learning_fill_candidates: int = 6
 
+    # E7 AI Interview Coach. Transcription runs fully offline (whisper.cpp, no network
+    # call); the model file is downloaded and checksummed at image build time, not
+    # committed to the repo (see Dockerfile). Loading degrades to unavailable rather
+    # than failing startup -- see WhisperTranscriber.load.
+    whisper_model_path: str = "models/whisper/ggml-base.bin"
+    whisper_threads: int = 4
+    # Source language forced on the transcriber; "auto" lets whisper detect.
+    interview_transcription_language: str = "en"
+    # PII redaction of transcripts; off because spaCy NER over-redacts and degrades answers.
+    interview_redaction_enabled: bool = False
+    interview_max_audio_bytes: int = 25 * 1024 * 1024
+    interview_max_audio_seconds: int = 300
+    interview_ffmpeg_timeout_s: float = 45.0
+    interview_content_retention_days: int = 30
+
     @property
     def gemini_api_keys(self) -> list[str]:
         """Active key first, then fallbacks, skipping any that are unset."""

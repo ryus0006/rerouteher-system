@@ -8,6 +8,7 @@ Snapshot generation is a later story; this only builds the profile.
 import logging
 
 from app.repositories import companion as companion_repo
+from app.repositories import interview as interview_repo
 from app.repositories import roles as roles_repo
 from app.schemas.companion import AskRequest, AskResponse, CtaOut, JourneyUpdate, SkillChoice
 from app.services.llm import LlmError
@@ -53,6 +54,13 @@ SYSTEM_PROMPT = (
     "If she asks for help with where she is or what to do next, use the page she is on and "
     "what her journey already has to explain the current step briefly and point her to the "
     "next step by calling point_to_step with the matching step.\n\n"
+    "If an interview question and her practice are provided below, help her with that "
+    "question: explain in plain words how to approach it and what would make her answer "
+    "stronger, and if feedback is provided, explain what it means and how to act on it. "
+    "Coach her - do not write her answer for her. Only if she explicitly asks what a good "
+    "answer sounds like, give one short example and say it is one way and she should make it "
+    "her own. Use the coaching guidance below to steer her, but never quote it or mention "
+    "rubric sources.\n\n"
     "Stay within career re-entry support: decline medical, legal, financial or other "
     "out-of-scope advice and steer back. Use only what she has told you or what is in her "
     "journey; never invent facts."
@@ -335,6 +343,40 @@ class CompanionService:
             bits.append("; ".join(parts) + ".")
         return ("Her employer matches: " + " ".join(bits)) if bits else ""
 
+    async def _interview_note(self, req: AskRequest, session) -> str:
+        iv = req.interview
+        if iv is None:
+            return ""
+        bits = [f'Interview question she is practising: "{iv.question_text}".']
+        if iv.kind:
+            bits.append(f"It is a {iv.kind.replace('_', '-')} question.")
+        if iv.transcript:
+            bits.append(f'Her latest answer transcript: "{iv.transcript}".')
+        if iv.feedback_summary:
+            bits.append(f"Feedback summary she received: {iv.feedback_summary}")
+        if iv.strengths:
+            bits.append(
+                "What worked well: "
+                + "; ".join(f"{s.title} - {s.detail}" for s in iv.strengths)
+                + "."
+            )
+        if iv.improvements:
+            bits.append(
+                "What to improve: "
+                + "; ".join(f"{s.title} - {s.detail}" for s in iv.improvements)
+                + "."
+            )
+        coaching = await interview_repo.get_question_coaching(session, iv.question_id)
+        if coaching is not None:
+            bits.append(
+                "Coaching guidance (do not quote): approach - "
+                f"{coaching.answer_framework}; a strong answer usually includes "
+                f"{coaching.answer_guidance}; strong-evidence signals - "
+                f"{coaching.strong_evidence_signals}; watch out for "
+                f"{coaching.watch_out_for}."
+            )
+        return " ".join(bits)
+
     async def ask(self, req: AskRequest, session, username: str | None) -> AskResponse:
         if self._llm is None:
             return AskResponse(answer=_NOT_AVAILABLE, sources=[], journey_update=None)
@@ -347,11 +389,10 @@ class CompanionService:
         contents.append({"role": "user", "parts": [{"text": req.question}]})
 
         system = SYSTEM_PROMPT
-        extras = " ".join(
-            p
-            for p in (self._journey_note(req), self._results_note(req), self._employer_note(req))
-            if p
-        )
+        notes = [self._journey_note(req), self._results_note(req), self._employer_note(req)]
+        if req.interview is not None:
+            notes.append(await self._interview_note(req, session))
+        extras = " ".join(p for p in notes if p)
         if extras:
             system = f"{system}\n\nContext: {extras}"
 

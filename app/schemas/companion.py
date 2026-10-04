@@ -31,11 +31,28 @@ class JourneyIn(BaseModel):
     employerMatches: list[dict] = []
 
 
+class InterviewFeedbackItemIn(BaseModel):
+    title: str = ""
+    detail: str = ""
+
+
+class InterviewContextIn(BaseModel):
+    # Interview practice context carried in so Hera can coach on the current question.
+    question_id: str
+    question_text: str = ""
+    kind: str = ""
+    transcript: str | None = None
+    feedback_summary: str | None = None
+    strengths: list[InterviewFeedbackItemIn] = []
+    improvements: list[InterviewFeedbackItemIn] = []
+
+
 class AskRequest(BaseModel):
     question: str
     session_id: str
     journey: JourneyIn = JourneyIn()
     current_page: str | None = None
+    interview: InterviewContextIn | None = None
 
 
 class JourneyUpdate(BaseModel):
