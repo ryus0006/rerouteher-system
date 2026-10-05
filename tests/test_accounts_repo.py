@@ -62,3 +62,10 @@ async def test_get_plan_parses_json_string():
 
 async def test_get_plan_none_when_absent():
     assert await repo.get_plan(FakeSession(None), "aisha") is None
+
+
+async def test_get_plan_for_update_uses_row_lock_and_parses_json():
+    s = FakeSession(FakeRow(plan_json=json.dumps({"snapshot": {"x": 1}})))
+
+    assert await repo.get_plan_for_update(s, "aisha") == {"snapshot": {"x": 1}}
+    assert "FOR UPDATE" in s.calls[0][0]

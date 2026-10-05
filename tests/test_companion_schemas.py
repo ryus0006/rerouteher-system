@@ -1,7 +1,14 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.companion import AskRequest, AskResponse, InterviewContextIn, JourneyUpdate
+from app.schemas.companion import (
+    AskRequest,
+    AskResponse,
+    InterviewContextIn,
+    JourneyUpdate,
+    ProfileSkillUpdate,
+    SkillChoice,
+)
 
 
 def test_ask_request_interview_defaults_none():
@@ -139,3 +146,22 @@ def test_ask_response_round_trip_with_journey_update():
     d = resp.model_dump(by_alias=True)
     assert d["journey_update"]["break"]["duration_years"] == 2
     assert d["answer"] == "done"
+
+
+def test_ask_response_carries_skill_matches_and_profile_update():
+    resp = AskResponse(
+        answer="I found one matching skill.",
+        skill_matches=[SkillChoice(skill_id="s1", skill_name="SQL", definition="Query data.")],
+        profile_skill_update=ProfileSkillUpdate(
+            action="add",
+            status="added",
+            skill_id="s1",
+            skill="SQL",
+            snapshot={"professional_skills": [{"skill_id": "s1", "skill": "SQL"}]},
+        ),
+    )
+    data = resp.model_dump()
+    assert data["skill_matches"][0]["definition"] == "Query data."
+    assert data["profile_skill_update"]["status"] == "added"
+    assert AskResponse(answer="hi").skill_matches is None
+    assert AskResponse(answer="hi").profile_skill_update is None

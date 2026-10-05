@@ -1,6 +1,8 @@
 import pytest
+from types import SimpleNamespace
 
 from app.schemas.companion import AskRequest
+from app.services.profile_skills import ProfileSkillMutation
 from app.services.companion import CompanionService
 from app.services.llm import GenerateResult
 
@@ -614,3 +616,105 @@ async def test_no_interview_note_without_interview_context():
     svc = CompanionService(llm=llm, repo=FakeRepo())
     await svc.ask(AskRequest(question="hello", session_id="s1"), session=object(), username=None)
     assert "Her latest answer transcript" not in llm.calls[0]["system"]
+
+
+class FakeProfileSkillService:
+    def __init__(self):
+        self.added = []
+        self.removed = []
+
+    async def match_skills(self, session, query, limit=3):
+        return [
+            SimpleNamespace(
+                skill_id="s1",
+                canonical_name="SQL",
+                definition="Query data.",
+                similarity=0.99,
+            ),
+            SimpleNamespace(
+                skill_id="s2",
+                canonical_name="Data analysis",
+                definition="Interpret data.",
+                similarity=0.74,
+            ),
+        ][:limit]
+
+    async def add_skill(self, session, username, skill_id):
+        self.added.append((username, skill_id))
+        return ProfileSkillMutation(
+            status="added",
+            skill_id=skill_id,
+            skill="SQL",
+            definition="Query data.",
+            plan={"snapshot": {"professional_skills": [{"skill_id": skill_id, "skill": "SQL"}]}},
+            snapshot={"professional_skills": [{"skill_id": skill_id, "skill": "SQL"}]},
+            gap_result=None,
+            learned_skills=[],
+        )
+
+    async def remove_skill(self, session, username, skill_id):
+        self.removed.append((username, skill_id))
+        return ProfileSkillMutation(
+            status="removed",
+            skill_id=skill_id,
+            skill="SQL",
+            definition="Query data.",
+            plan={"snapshot": {"professional_skills": []}},
+            snapshot={"professional_skills": []},
+            gap_result=None,
+            learned_skills=[],
+        )
+
+
+async def test_search_profile_skills_returns_taxonomy_candidates():
+    profile = FakeProfileSkillService()
+    llm = ScriptedLlm(
+        [_fn("search_profile_skills", {"query": "data"}), _text("I found two options.")]
+    )
+    svc = CompanionService(llm=llm, repo=FakeRepo(), profile_skill_service=profile)
+    resp = await svc.ask(
+        AskRequest(question="I learned data skills", session_id="s1"),
+        session=object(),
+        username=None,
+    )
+    assert [item.skill_id for item in resp.skill_matches] == ["s1", "s2"]
+    assert resp.skill_matches[0].definition == "Query data."
+    response = llm.calls[1]["contents"][-1]["parts"][0]["functionResponse"]["response"]
+    assert response["status"] == "found"
+    assert [item["skill_id"] for item in response["skills"]] == ["s1", "s2"]
+
+
+async def test_add_and_remove_profile_skill_tools_require_signed_in_user():
+    profile = FakeProfileSkillService()
+    llm = ScriptedLlm(
+        [
+            _fn("add_profile_skill", {"skill_id": "s1"}),
+            _fn("remove_profile_skill", {"skill_id": "s1"}),
+            _text("Done."),
+        ]
+    )
+    svc = CompanionService(llm=llm, repo=FakeRepo(), profile_skill_service=profile)
+    resp = await svc.ask(
+        AskRequest(question="yes, add it, then remove it", session_id="s1"),
+        session=object(),
+        username="aisha",
+    )
+    assert profile.added == [("aisha", "s1")]
+    assert profile.removed == [("aisha", "s1")]
+    assert resp.profile_skill_update.status == "removed"
+    assert resp.profile_skill_update.action == "remove"
+
+
+async def test_profile_skill_mutation_is_not_run_for_guest():
+    profile = FakeProfileSkillService()
+    llm = ScriptedLlm([_fn("add_profile_skill", {"skill_id": "s1"}), _text("Please sign in.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), profile_skill_service=profile)
+    resp = await svc.ask(
+        AskRequest(question="add SQL", session_id="s1"),
+        session=object(),
+        username=None,
+    )
+    assert profile.added == []
+    assert resp.profile_skill_update is None
+    response = llm.calls[1]["contents"][-1]["parts"][0]["functionResponse"]["response"]
+    assert response["status"] == "authentication_required"

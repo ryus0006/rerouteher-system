@@ -24,6 +24,45 @@ class SkillRow:
     definition: str | None = None
 
 
+async def get_skill_by_id(session: AsyncSession, skill_id: str) -> SkillRow | None:
+    row = (
+        await session.execute(
+            text(
+                "SELECT skill_id, canonical_name, skill_type, definition "
+                "FROM skill_taxonomy WHERE skill_id = :sid"
+            ),
+            {"sid": skill_id},
+        )
+    ).first()
+    return (
+        SkillRow(row.skill_id, row.canonical_name, row.skill_type, row.definition)
+        if row
+        else None
+    )
+
+
+async def find_exact_skills(
+    session: AsyncSession, query: str, limit: int = 3
+) -> list[SkillRow]:
+    rows = (
+        await session.execute(
+            text(
+                "SELECT DISTINCT st.skill_id, st.canonical_name, st.skill_type, st.definition "
+                "FROM skill_taxonomy st "
+                "LEFT JOIN skill_aliases sa ON sa.skill_id = st.skill_id "
+                "WHERE lower(st.canonical_name) = lower(:q) "
+                "OR lower(sa.alias) = lower(:q) "
+                "ORDER BY st.canonical_name LIMIT :lim"
+            ),
+            {"q": query.strip(), "lim": limit},
+        )
+    ).all()
+    return [
+        SkillRow(r.skill_id, r.canonical_name, r.skill_type, r.definition)
+        for r in rows
+    ]
+
+
 async def list_skills(session: AsyncSession) -> list[SkillRow]:
     """Canonical skill rows for building a skill_id -> canonical lookup."""
     rows = (

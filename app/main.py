@@ -36,6 +36,7 @@ from app.services.job_sources import (
 from app.services.learning import LearningService
 from app.services.learning_fill import LearningFillService
 from app.services.llm import GeminiClient
+from app.services.profile_skills import ProfileSkillService
 from app.services.tavily import TavilySearcher
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.reranker import CrossEncoderReranker
@@ -121,6 +122,10 @@ async def lifespan(app: FastAPI):
         settings=settings, embedder=embedder, tfidf_matcher=tfidf_matcher, reranker=reranker
     )
     app.state.gap_service = GapService(settings=settings)
+    app.state.profile_skill_service = ProfileSkillService(
+        embedder=embedder,
+        gap_service=app.state.gap_service,
+    )
     # One Gemini client is shared by the companion and the learning fill.
     llm = GeminiClient.from_settings(settings)
     app.state.cv_generation_service = CvGenerationService(llm)
@@ -129,6 +134,7 @@ async def lifespan(app: FastAPI):
     app.state.companion_service = CompanionService(
         llm=llm,
         role_resolver=app.state.snapshot_service,
+        profile_skill_service=app.state.profile_skill_service,
     )
     # E6 on-demand learning fill: Tavily search + Gemini pick, run in the background
     # after a gap is computed. Disabled (degrades to the YouTube fallback) if either

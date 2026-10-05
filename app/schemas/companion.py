@@ -8,6 +8,19 @@ from app.schemas.snapshot import Break
 class SkillChoice(BaseModel):
     skill_id: str
     skill_name: str
+    definition: str | None = None
+    similarity: float | None = None
+
+
+class ProfileSkillUpdate(BaseModel):
+    action: str
+    status: str
+    skill_id: str
+    skill: str | None = None
+    definition: str | None = None
+    snapshot: dict = {}
+    gap_result: dict | None = None
+    learned_skills: list[dict] = []
 
 
 class JourneyIn(BaseModel):
@@ -81,3 +94,5 @@ class AskResponse(BaseModel):
     # The role_id the skill_choices belong to; the frontend records it as
     # roleSkillsOfferedForRoleId so the same role is not offered again.
     skill_choices_role_id: str | None = None
+    skill_matches: list[SkillChoice] | None = None
+    profile_skill_update: ProfileSkillUpdate | None = None

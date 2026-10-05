@@ -10,8 +10,16 @@ import logging
 from app.repositories import companion as companion_repo
 from app.repositories import interview as interview_repo
 from app.repositories import roles as roles_repo
-from app.schemas.companion import AskRequest, AskResponse, CtaOut, JourneyUpdate, SkillChoice
+from app.schemas.companion import (
+    AskRequest,
+    AskResponse,
+    CtaOut,
+    JourneyUpdate,
+    ProfileSkillUpdate,
+    SkillChoice,
+)
 from app.services.llm import LlmError
+from app.services.profile_skills import ProfileSkillError
 
 logger = logging.getLogger("rerouteher")
 
@@ -41,6 +49,21 @@ SYSTEM_PROMPT = (
     "she already has from that role. Only describe actions you have actually taken this turn "
     "- do not say you have shown her a checklist or saved anything unless you called the "
     "matching tool.\n\n"
+    "When she describes a professional skill she may have learned, use "
+    "search_profile_skills to find up to three matching skills from the taxonomy. Show the "
+    "candidate names and ask her to confirm the exact skill before calling add_profile_skill. "
+    "Only call add_profile_skill or remove_profile_skill after she explicitly confirms the "
+    "skill and the action. Never invent a skill id. "
+    "The moment she confirms, your next action in that turn MUST be to call add_profile_skill "
+    "(or remove_profile_skill). Pass the exact candidate name you showed her as skill_name "
+    "(the backend resolves it); also pass skill_id when you still have it from a "
+    "search_profile_skills result in this same turn. On confirmation, never answer with words "
+    "alone, never re-run search_profile_skills, and never call point_to_step or update_profile in "
+    "place of the mutation tool; point_to_step only navigates and never saves a skill. "
+    "These tools change her signed-in profile; "
+    "for a guest, explain that she must sign in and do not claim the skill was saved or removed. "
+    "Only say a change was saved when the mutation tool returns a successful status this turn; if "
+    "you did not call the mutation tool or it did not succeed, tell her it is not saved yet.\n\n"
     "If her results are provided below, answer her questions about her skills, readiness "
     "and priority gaps grounded only in those results, in plain language that relates them "
     "to her experience and target role. When she asks about a specific gap, explain "
@@ -201,7 +224,85 @@ OFFER_ROLE_SKILLS_TOOL = {
 }
 _MAX_ROLE_SKILL_CHOICES = 15
 
-_TOOLS = [UPDATE_PROFILE_TOOL, POINT_TO_STEP_TOOL, OFFER_ROLE_SKILLS_TOOL]
+SEARCH_PROFILE_SKILLS_TOOL = {
+    "function_declarations": [
+        {
+            "name": "search_profile_skills",
+            "description": (
+                "Find up to three professional skills in the verified skill taxonomy. Use this "
+                "to discuss a skill or before asking the user to confirm an add or removal."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        }
+    ]
+}
+
+ADD_PROFILE_SKILL_TOOL = {
+    "function_declarations": [
+        {
+            "name": "add_profile_skill",
+            "description": (
+                "Add one confirmed taxonomy skill to the signed-in user's professional "
+                "snapshot. Call only after explicit user confirmation. Provide the confirmed "
+                "candidate name as skill_name, and skill_id as well when you have it from a "
+                "search_profile_skills result in this same turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The skill_id from this turn's search_profile_skills result, if available.",
+                    },
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The exact candidate name shown to and confirmed by the user; the backend resolves it.",
+                    },
+                },
+            },
+        }
+    ]
+}
+
+REMOVE_PROFILE_SKILL_TOOL = {
+    "function_declarations": [
+        {
+            "name": "remove_profile_skill",
+            "description": (
+                "Remove one confirmed taxonomy skill from the signed-in user's professional "
+                "snapshot. Call only after explicit user confirmation. Provide the confirmed "
+                "candidate name as skill_name, and skill_id as well when you have it from a "
+                "search_profile_skills result in this same turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The skill_id from this turn's search_profile_skills result, if available.",
+                    },
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The exact candidate name shown to and confirmed by the user; the backend resolves it.",
+                    },
+                },
+            },
+        }
+    ]
+}
+
+_TOOLS = [
+    UPDATE_PROFILE_TOOL,
+    POINT_TO_STEP_TOOL,
+    OFFER_ROLE_SKILLS_TOOL,
+    SEARCH_PROFILE_SKILLS_TOOL,
+    ADD_PROFILE_SKILL_TOOL,
+    REMOVE_PROFILE_SKILL_TOOL,
+]
 
 # Cap on tool-calling rounds per turn, so a model that keeps calling tools cannot loop
 # unbounded; on the cap we force one final answer with no tools.
@@ -230,12 +331,60 @@ def _function_calls(content: dict) -> list[dict]:
 
 
 class CompanionService:
-    def __init__(self, llm=None, repo=companion_repo, role_resolver=None) -> None:
+    def __init__(
+        self,
+        llm=None,
+        repo=companion_repo,
+        role_resolver=None,
+        profile_skill_service=None,
+    ) -> None:
         self._llm = llm
         self._repo = repo
         # anything exposing async resolve_role(title, skill_names, session) -> role|None;
         # the snapshot service provides it so the checklist role matches the derived one.
         self._role_resolver = role_resolver
+        self._profile_skill_service = profile_skill_service
+
+    @staticmethod
+    def _skill_choices(matches) -> list[SkillChoice]:
+        return [
+            SkillChoice(
+                skill_id=match.skill_id,
+                skill_name=match.canonical_name,
+                definition=getattr(match, "definition", None) or None,
+                similarity=getattr(match, "similarity", None),
+            )
+            for match in matches[:3]
+        ]
+
+    async def _resolve_profile_skill(self, args, session):
+        if self._profile_skill_service is None:
+            return None, []
+        skill_id = (args.get("skill_id") or "").strip()
+        if skill_id:
+            return skill_id, []
+        skill_name = (args.get("skill_name") or "").strip()
+        if not skill_name:
+            return None, []
+        choices = self._skill_choices(
+            await self._profile_skill_service.match_skills(session, skill_name, limit=3)
+        )
+        if len(choices) == 1:
+            return choices[0].skill_id, choices
+        return None, choices
+
+    @staticmethod
+    def _profile_skill_update(action: str, mutation) -> ProfileSkillUpdate:
+        return ProfileSkillUpdate(
+            action=action,
+            status=mutation.status,
+            skill_id=mutation.skill_id,
+            skill=mutation.skill,
+            definition=mutation.definition,
+            snapshot=mutation.snapshot,
+            gap_result=mutation.gap_result,
+            learned_skills=mutation.learned_skills,
+        )
 
     async def _role_skill_choices(self, occupation, req, session):
         """Resolve her occupation to a role and return (role_id, distinctive skill choices),
@@ -400,6 +549,8 @@ class CompanionService:
         cta: CtaOut | None = None
         skill_choices = None
         skill_choices_role_id = None
+        skill_matches = None
+        profile_skill_update = None
         sources: list[str] = []
         tokens_in = 0
         tokens_out = 0
@@ -459,6 +610,75 @@ class CompanionService:
                             status = {"status": "shown", "count": len(skill_choices)}
                         else:
                             status = {"status": "already_shown"}
+                    elif name == "search_profile_skills":
+                        if self._profile_skill_service is None:
+                            status = {"status": "temporarily_unavailable"}
+                        else:
+                            try:
+                                skill_matches = self._skill_choices(
+                                    await self._profile_skill_service.match_skills(
+                                        session, args.get("query") or "", limit=3
+                                    )
+                                )
+                                status = (
+                                    {
+                                        "status": "found",
+                                        "skills": [
+                                            item.model_dump(exclude_none=True)
+                                            for item in skill_matches
+                                        ],
+                                    }
+                                    if skill_matches
+                                    else {"status": "not_found", "skills": []}
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "companion profile skill search failed: %s",
+                                    type(exc).__name__,
+                                )
+                                status = {"status": "temporarily_unavailable"}
+                    elif name in {"add_profile_skill", "remove_profile_skill"}:
+                        action = "add" if name == "add_profile_skill" else "remove"
+                        if not username:
+                            status = {"status": "authentication_required"}
+                        elif self._profile_skill_service is None:
+                            status = {"status": "temporarily_unavailable"}
+                        else:
+                            try:
+                                skill_id, choices = await self._resolve_profile_skill(args, session)
+                                if choices:
+                                    skill_matches = choices
+                                if not skill_id:
+                                    status = {
+                                        "status": "skill_selection_required",
+                                        "skills": [
+                                            item.model_dump(exclude_none=True)
+                                            for item in (choices or [])
+                                        ],
+                                    }
+                                else:
+                                    mutation_method = (
+                                        self._profile_skill_service.add_skill
+                                        if action == "add"
+                                        else self._profile_skill_service.remove_skill
+                                    )
+                                    mutation = await mutation_method(session, username, skill_id)
+                                    profile_skill_update = self._profile_skill_update(
+                                        action, mutation
+                                    )
+                                    status = {
+                                        "status": mutation.status,
+                                        "skill_id": mutation.skill_id,
+                                        "skill": mutation.skill,
+                                    }
+                            except ProfileSkillError as exc:
+                                status = {"status": exc.kind, "message": exc.message}
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "companion profile skill mutation failed: %s",
+                                    type(exc).__name__,
+                                )
+                                status = {"status": "temporarily_unavailable"}
                     response_parts.append(
                         {"functionResponse": {"name": name, "response": status}}
                     )
@@ -505,4 +725,6 @@ class CompanionService:
             cta=cta,
             skill_choices=skill_choices,
             skill_choices_role_id=skill_choices_role_id,
+            skill_matches=skill_matches,
+            profile_skill_update=profile_skill_update,
         )
