@@ -100,10 +100,18 @@ class GapService:
                     band=band,
                     importance=float(rs.importance),
                     uplift=uplift,
+                    definition=self._definition(rs.definition),
                 )
             )
         gaps.sort(key=lambda g: (g.uplift, g.importance), reverse=True)
         return gaps
+
+    @staticmethod
+    def _definition(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
 
     def _uplift(self, role_skills, cov: dict[str, float], exposure_w, base: float, skill_id: str) -> float:
         # marginal readiness gain if this skill were covered

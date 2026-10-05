@@ -21,14 +21,23 @@ class SkillRow:
     skill_id: str
     canonical_name: str
     skill_type: str
+    definition: str | None = None
 
 
 async def list_skills(session: AsyncSession) -> list[SkillRow]:
     """Canonical skill rows for building a skill_id -> canonical lookup."""
     rows = (
-        await session.execute(text("SELECT skill_id, canonical_name, skill_type FROM skill_taxonomy"))
+        await session.execute(
+            text(
+                "SELECT skill_id, canonical_name, skill_type, definition "
+                "FROM skill_taxonomy"
+            )
+        )
     ).all()
-    return [SkillRow(r.skill_id, r.canonical_name, r.skill_type) for r in rows]
+    return [
+        SkillRow(r.skill_id, r.canonical_name, r.skill_type, r.definition)
+        for r in rows
+    ]
 
 
 async def load_alias_dictionary(session: AsyncSession) -> list[tuple[str, str]]:

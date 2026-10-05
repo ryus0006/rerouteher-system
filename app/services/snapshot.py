@@ -63,6 +63,7 @@ class SnapshotService:
         # lazily loaded skill lookup (cached on this singleton instance)
         self._term_to_skill: dict[str, str] | None = None
         self._skill_to_canonical: dict[str, str] = {}
+        self._skill_to_definition: dict[str, str | None] = {}
 
     async def generate(self, req: SnapshotRequest, session: AsyncSession) -> SnapshotResponse:
         await self._ensure_skill_lookup(session)
@@ -89,6 +90,7 @@ class SnapshotService:
             return
         for row in await skills_repo.list_skills(session):
             self._skill_to_canonical[row.skill_id] = row.canonical_name
+            self._skill_to_definition[row.skill_id] = row.definition
         term_to_skill: dict[str, str] = {}
         for skill_id, term in await skills_repo.load_alias_dictionary(session):
             key = term.strip().lower()
@@ -126,6 +128,7 @@ class SnapshotService:
                         skill_id=match.skill_id,
                         source="experience",
                         evidence="semantic match",
+                        definition=self._definition(match.skill_id),
                     ),
                 )
 
@@ -139,6 +142,7 @@ class SnapshotService:
                     skill_id=skill_id,
                     source="role_confirmed",
                     evidence="confirmed from role",
+                    definition=self._definition(skill_id),
                 ),
             )
 
@@ -159,7 +163,15 @@ class SnapshotService:
             skill_id=skill_id,
             source="experience",
             evidence=evidence,
+            definition=self._definition(skill_id),
         )
+
+    def _definition(self, skill_id: str) -> str | None:
+        value = self._skill_to_definition.get(skill_id)
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
 
     async def _semantic_skills(self, cv, session: AsyncSession) -> list[skills_repo.SkillMatch]:
         spans: list[str] = []
@@ -233,6 +245,7 @@ class SnapshotService:
                     skill_id=skill_id,
                     source="break",
                     from_activity=row.activity_id,
+                    definition=self._definition(skill_id) if skill_id else None,
                 )
             )
         return reframed

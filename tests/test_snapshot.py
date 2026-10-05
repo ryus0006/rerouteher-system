@@ -21,9 +21,10 @@ from app.services.snapshot import SnapshotService
 pytestmark = pytest.mark.asyncio
 
 SKILL_ROWS = [
-    SkillRow("s_pm", "Project management", "soft"),
-    SkillRow("s_budget", "Budgeting", "soft"),
-    SkillRow("s_ux", "User research", "technical"),
+    SkillRow("s_pm", "Project management", "soft", "Planning and coordinating work."),
+    SkillRow("s_budget", "Budgeting", "soft", None),
+    SkillRow("s_ux", "User research", "technical", "Understanding users and their needs."),
+    SkillRow("s_coord", "Coordination", "soft", "Bringing people and tasks together."),
 ]
 
 # (skill_id, term) pairs: canonical names + aliases, as load_alias_dictionary returns
@@ -34,6 +35,7 @@ ALIAS_PAIRS = [
     ("s_budget", "budget management"),
     ("s_ux", "User research"),
     ("s_ux", "ux research"),
+    ("s_coord", "Coordination"),
 ]
 
 
@@ -115,6 +117,9 @@ async def test_skills_and_embedding_response():
     assert "Project management" in names  # exact alias hit in raw_text
     assert "Budgeting" in names           # from skill_mentions
     assert "User research" in names       # semantic pass
+    definitions = {p.skill: p.definition for p in resp.professional_skills}
+    assert definitions["Project management"] == "Planning and coordinating work."
+    assert definitions["User research"] == "Understanding users and their needs."
     assert resp.previous_occupation.method == "embedding"
     assert resp.previous_occupation.role == "Project Coordinator"
     roles = [r.role for r in resp.recommended_roles]
@@ -256,6 +261,8 @@ async def test_reframe_dedupes():
     resp = await svc.generate(_request(), session=object())
     assert len(resp.reframed_skills) == 1
     assert resp.reframed_skills[0].skill == "Coordination"
+    assert resp.reframed_skills[0].skill_id == "s_coord"
+    assert resp.reframed_skills[0].definition == "Bringing people and tasks together."
     # no embedder -> no occupation match
     assert resp.previous_occupation is None
 
@@ -306,7 +313,23 @@ async def test_confirmed_skills_merge_into_professional():
     )
     resp = await svc.generate(req, session=object())
     confirmed = [p for p in resp.professional_skills if p.source == "role_confirmed"]
-    assert any(p.skill_id == "s_ux" and p.skill == "User research" for p in confirmed)
+    assert any(
+        p.skill_id == "s_ux"
+        and p.skill == "User research"
+        and p.definition == "Understanding users and their needs."
+        for p in confirmed
+    )
+
+
+async def test_missing_skill_definition_is_null():
+    svc = SnapshotService(Settings(), embedder=None, tfidf_matcher=None, reranker=None)
+    req = SnapshotRequest(
+        cv=CV(raw_text="budgeting", experiences=[], skill_mentions=["budgeting"]),
+        break_=Break(duration_years=0, activities=[]),
+    )
+    resp = await svc.generate(req, session=object())
+    budget = next(p for p in resp.professional_skills if p.skill_id == "s_budget")
+    assert budget.definition is None
 
 
 async def test_confirmed_skill_does_not_override_cv_evidence():

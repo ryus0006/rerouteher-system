@@ -14,8 +14,14 @@ def _role() -> RoleWithSkills:
         role_title="UX/UI Designer",
         ai_exposure="medium",
         skills=[
-            RoleSkillRow("s1", "User research", "technical", 80),
-            RoleSkillRow("s2", "Prototyping", "technical", 70),
+            RoleSkillRow(
+                "s1",
+                "User research",
+                "technical",
+                80,
+                "Understanding users and their needs.",
+            ),
+            RoleSkillRow("s2", "Prototyping", "technical", 70, " "),
             RoleSkillRow("s3", "Coordination", "soft", 60),
             RoleSkillRow("s4", "Use AI design tools", "ai_usage", 90),
         ],
@@ -78,9 +84,14 @@ def test_ranked_gaps_carry_skill_id():
     svc = _service()
     role = _role()
     # s1 (User research) uncovered -> must appear as a gap carrying its skill_id
-    cov = {s.skill_id: (0.0 if s.skill_id == "s1" else 1.0) for s in role.skills}
+    cov = {
+        s.skill_id: (0.0 if s.skill_id in {"s1", "s2"} else 1.0)
+        for s in role.skills
+    }
     base = svc._readiness(role.skills, cov, 0.4)
     gaps = svc._rank_gaps(role.skills, cov, 0.4, base)
     by_id = {g.skill_id: g for g in gaps}
     assert "s1" in by_id
     assert by_id["s1"].skill == "User research"
+    assert by_id["s1"].definition == "Understanding users and their needs."
+    assert by_id["s2"].definition is None

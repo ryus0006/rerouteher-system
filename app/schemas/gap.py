@@ -19,6 +19,7 @@ class Gap(BaseModel):
     band: Literal["role", "ai_usage"]
     importance: float
     uplift: float
+    definition: str | None = None
 
 
 class GapResponse(BaseModel):
