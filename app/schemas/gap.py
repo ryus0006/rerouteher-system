@@ -22,7 +22,14 @@ class Gap(BaseModel):
     definition: str | None = None
 
 
+class HeldSkill(BaseModel):
+    # A role requirement the user already covers. Carries the ESCO id so the UI
+    # can request refresher resources for it deterministically (not by name).
+    skill_id: str
+    skill: str
+
+
 class GapResponse(BaseModel):
     readiness: float
-    skills_have: list[str] = []
+    skills_have: list[HeldSkill] = []
     gaps: list[Gap] = []

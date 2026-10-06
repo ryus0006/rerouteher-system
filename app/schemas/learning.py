@@ -18,7 +18,7 @@ class LearningResourceOut(BaseModel):
     provider: str
     logo: str | None = None
     format: str
-    minutes: int | None = None
+    minutes: int = 0
     cost: str
     free: bool
     url: str

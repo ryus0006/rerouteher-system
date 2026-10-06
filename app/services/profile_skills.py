@@ -87,8 +87,8 @@ class ProfileSkillService:
                 round(float(gap_result.get("readiness") or 0) + float(gap.get("uplift") or 0), 1),
             )
             have = list(gap_result.get("skills_have") or [])
-            if skill.canonical_name not in have:
-                have.append(skill.canonical_name)
+            if not any(self._skill_id(item) == skill.skill_id for item in have):
+                have.append({"skill_id": skill.skill_id, "skill": skill.canonical_name})
             gap_result["skills_have"] = have
             gap_result["gaps"] = [
                 item for item in gap_result.get("gaps") or [] if self._skill_id(item) != skill.skill_id

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.repositories import roles as roles_repo
-from app.schemas.gap import Gap, GapRequest, GapResponse
+from app.schemas.gap import Gap, GapRequest, GapResponse, HeldSkill
 
 logger = logging.getLogger("rerouteher")
 
@@ -53,7 +53,13 @@ class GapService:
 
         exposure_w = self._settings.ai_exposure_weight(role.ai_exposure)
         readiness = self._readiness(role.skills, cov, exposure_w)
-        skills_have = sorted({rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0})
+        # Held skills carry their ESCO id (deduped by id, listed by name) so the UI
+        # can fetch refresher resources for them deterministically.
+        held = {rs.skill_id: rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0}
+        skills_have = [
+            HeldSkill(skill_id=sid, skill=name)
+            for sid, name in sorted(held.items(), key=lambda kv: kv[1])
+        ]
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
         logger.info(
             "gap: target_id=%s (%r) -> role_id=%s role_skills=%d have_ids=%d exact=%d embed=%d readiness=%.1f",

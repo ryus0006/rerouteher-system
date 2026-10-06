@@ -71,7 +71,7 @@ def make_plan():
         "selectedRole": {"role_id": "role-1", "role": "Analyst"},
         "gapResult": {
             "readiness": 55,
-            "skills_have": ["User research"],
+            "skills_have": [{"skill_id": "s-ux", "skill": "User research"}],
             "gaps": [
                 {
                     "skill_id": "s-sql",
@@ -166,7 +166,7 @@ async def test_add_current_gap_skill_applies_uplift_and_leaves_learned_skills(fa
     assert result.skill_id == "s-sql"
     assert result.snapshot["professional_skills"][-1]["skill"] == "SQL"
     assert result.gap_result["readiness"] == 67
-    assert result.gap_result["skills_have"][-1] == "SQL"
+    assert result.gap_result["skills_have"][-1] == {"skill_id": "s-sql", "skill": "SQL"}
     assert [gap["skill_id"] for gap in result.gap_result["gaps"]] == ["s-copy"]
     assert result.learned_skills == []
     assert result.plan["unrelated"] == {"keep": True}

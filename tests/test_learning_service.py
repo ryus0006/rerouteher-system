@@ -65,7 +65,7 @@ async def test_uncovered_skill_gets_one_youtube_search_resource():
     assert res.skill_id == "s2"
     assert res.provider == "YouTube"
     assert res.logo == "youtube"
-    assert res.minutes is None  # AC 6.2.4
+    assert res.minutes == 0  # AC 6.2.4: no duration known defaults to 0
     assert res.free is True and res.cost == "Free"  # AC 6.2.5
     assert "youtube.com/results?search_query=" in res.url
     assert "Prototyping" in res.url or "prototyping" in res.url.lower()
