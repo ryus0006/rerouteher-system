@@ -9,6 +9,7 @@ Pipeline:
 """
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 
@@ -27,6 +28,10 @@ class UnreadableCVError(Exception):
 # --- PII (never emitted in structured fields; also redacted from raw_text) ---
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE_RE = re.compile(r"(?<!\w)(\+?\d[\d\s().\-]{7,}\d)(?!\w)")
+# A four-digit to four-digit span is a year range (e.g. 2019-2023), not a phone number.
+_YEAR_RANGE_RE = re.compile(r"(?:19|20)\d{2}\s*[-–—]\s*(?:19|20)\d{2}")
+# spaCy entity labels for places; a line made mostly of these is a personal address line.
+_LOC_LABELS = {"GPE", "LOC", "FAC"}
 
 # --- Section headers ---
 _EXPERIENCE_HEADER_RE = re.compile(
@@ -141,22 +146,28 @@ class CVExtractor:
         right column. Otherwise fall back to a plain top-to-bottom, left-to-right sort.
         """
         mid = page_width / 2
-        left = [b for b in blocks if (b[0] + b[2]) / 2 < mid]
-        right = [b for b in blocks if (b[0] + b[2]) / 2 >= mid]
-        crossing = [b for b in blocks if b[0] < mid < b[2]]  # blocks spanning the gutter
+        key = lambda b: (round(b[1], 1), b[0])  # noqa: E731
+        # Full-width blocks (name banner, section rules) span the gutter legitimately and
+        # are not evidence against a two-column body; read them in vertical position and
+        # decide the column split on the narrower body blocks only.
+        banner = [b for b in blocks if (b[2] - b[0]) > 0.6 * page_width]
+        body = [b for b in blocks if (b[2] - b[0]) <= 0.6 * page_width]
+        left = [b for b in body if (b[0] + b[2]) / 2 < mid]
+        right = [b for b in body if (b[0] + b[2]) / 2 >= mid]
+        crossing = [b for b in body if b[0] < mid < b[2]]  # blocks spanning the gutter
 
         two_column = (
             len(left) >= 2
-            and len(right) >= max(2, 0.2 * len(blocks))
-            and len(crossing) <= max(1, 0.1 * len(blocks))
+            and len(right) >= max(2, 0.2 * len(body))
+            and len(crossing) <= max(1, 0.1 * len(body))
         )
         if two_column:
-            key = lambda b: (round(b[1], 1), b[0])  # noqa: E731
-            return sorted(left, key=key) + sorted(right, key=key)
-        return sorted(blocks, key=lambda b: (round(b[1], 1), b[0]))
+            return sorted(banner + left, key=key) + sorted(right, key=key)
+        return sorted(blocks, key=key)
 
     # ------------------------------------------------------------- experience
     def _segment_experiences(self, raw_text: str) -> list[Experience]:
+        raw_text = self._join_wrapped_dates(raw_text)
         lines = [ln.rstrip() for ln in raw_text.splitlines()]
         section = self._experience_section(lines)
         experiences = self._experiences_from(section)
@@ -167,10 +178,30 @@ class CVExtractor:
             experiences = self._experiences_from(lines)
         return experiences
 
+    @staticmethod
+    def _join_wrapped_dates(text: str) -> str:
+        """Re-join date ranges split across lines by narrow two-column layouts, so the
+        entry splitter sees one dated line. "February 2024-\\nOctober 2024" and
+        "September\\n2023-November 2023" both become a single "start - end" span."""
+        text = re.sub(r"(\d{4})\s*[-–—]\s*\n\s*", r"\1 - ", text)
+        text = re.sub(
+            rf"({_MONTH})\s*\n\s*((?:\d{{1,2}}[/-])?\d{{4}}\b)",
+            r"\1 \2",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return text
+
     def _experiences_from(self, section_lines: list[str]) -> list[Experience]:
         entries = self._split_entries(section_lines)
         experiences = [self._build_experience(entry) for entry in entries]
-        return [e for e in experiences if e is not None]
+        # Drop entries whose title is really a section header (e.g. a "REFERENCES" line
+        # that landed next to a dated line) - they are never a real role.
+        return [
+            e
+            for e in experiences
+            if e is not None and not (e.title and _OTHER_SECTION_RE.match(e.title.strip()))
+        ]
 
     def _experience_section(self, lines: list[str]) -> list[str]:
         """Return the work-history lines by tracking the current section.
@@ -299,6 +330,10 @@ class CVExtractor:
             if line != title and (organisation is None or line.lower() != organisation.lower())
         ]
         description = " ".join(described).strip() or None
+        # Tidy a title taken from prose (e.g. "Assistant Manager at Ori SDN BHD, poised
+        # to ...") down to the role. Done after the description is built so the full line
+        # is still excluded from it.
+        title = self._tidy_title(title)
         # Diagnostic: how each entry was segmented, so title mislabels (a company/location
         # line or a career-break bullet promoted to a title) and the branch that chose them
         # are visible. spacy_org=None means NER found no organisation for this entry.
@@ -314,6 +349,17 @@ class CVExtractor:
             end=end,
             description=description,
         )
+
+    @staticmethod
+    def _tidy_title(title: str | None) -> str | None:
+        """When a title was taken from a prose sentence, keep just the role: cut at
+        " at <employer>" and drop a trailing clause after a comma. Only applied to
+        sentence-like titles (5+ words) so real multi-word titles are left intact."""
+        if not title or len(title.split()) < 5:
+            return title
+        tidied = re.split(r"\s+at\s+", title, maxsplit=1, flags=re.IGNORECASE)[0]
+        tidied = tidied.split(",")[0].strip(" -–—|:\t")
+        return tidied or title
 
     def _first_org(self, text: str) -> str | None:
         if self._nlp is None:
@@ -340,12 +386,27 @@ class CVExtractor:
                 continue
             if term_l in phrases:  # exact, word-boundary safe
                 matched[term_l] = term
-            elif process.extractOne(term_l, phrases, scorer=fuzz.ratio, score_cutoff=90) is not None:
-                matched[term_l] = term
+                continue
+            hit = process.extractOne(term_l, phrases, scorer=fuzz.ratio, score_cutoff=90)
+            if hit is None:
+                continue
+            phrase = hit[0]
+            # Reject partial-word matches where one term merely contains the other with
+            # extra letters (e.g. "inventor" in "inventory", "interest" in "pinterest").
+            # Compare on alphanumerics so a punctuation-only difference ("budgeting" vs
+            # "budgeting.") and genuine typos ("data anlysis" ~ "data analysis") still pass.
+            a = re.sub(r"[^a-z0-9]", "", term_l)
+            b = re.sub(r"[^a-z0-9]", "", phrase)
+            if a != b and (a in b or b in a):
+                continue
+            matched[term_l] = term
         return sorted(matched.values())
 
     @staticmethod
     def _candidate_phrases(text_lower: str) -> set[str]:
+        # Drop PII redaction placeholders so their inner words ("email" in "[email]") are
+        # not matched as skills.
+        text_lower = re.sub(r"\[[a-z]+\]", " ", text_lower)
         words = re.findall(r"[a-z][a-z0-9+.#-]*", text_lower)
         phrases: set[str] = set()
         for n in (1, 2, 3, 4):
@@ -354,8 +415,77 @@ class CVExtractor:
         return phrases
 
     # ------------------------------------------------------------------- pii
-    @staticmethod
-    def _redact_pii(text: str) -> str:
+    def _redact_pii(self, text: str) -> str:
         text = _EMAIL_RE.sub("[email]", text)
-        text = _PHONE_RE.sub("[phone]", text)
+
+        def _phone(match: re.Match) -> str:
+            span = match.group(1)
+            # Leave plain year ranges (e.g. 2019-2023) alone - they anchor experience
+            # dates, and a phone number has more digits than a four-plus-four year span.
+            if _YEAR_RANGE_RE.fullmatch(span.strip()):
+                return span
+            return "[phone]" if len(re.sub(r"\D", "", span)) >= 9 else span
+
+        text = _PHONE_RE.sub(_phone, text)
+        return self._redact_entities(text)
+
+    @staticmethod
+    def _mask(value: str) -> str:
+        """Mask the majority of a value: keep the first letter of each word and replace the
+        rest with asterisks, so it is present but not identifiable ("Kelvin Ku" -> "K***** K*")."""
+        return re.sub(
+            r"[A-Za-z0-9]{2,}",
+            lambda m: m.group(0)[0] + "*" * (len(m.group(0)) - 1),
+            value,
+        )
+
+    def _redact_entities(self, text: str) -> str:
+        """Mask personal names and address lines via spaCy NER so the candidate is not
+        identifiable, without aiming for perfect removal. Works across CV layouts, not one
+        template: PERSON spans (the candidate and any referees) and lines that are mostly
+        place names (e.g. "Subang Jaya, Selangor") are partly masked. Place names embedded
+        in org/experience text ("Grab Malaysia") are left so skill/role matching still
+        works. Degrades to no-op when spaCy is unavailable."""
+        if self._nlp is None:
+            return text
+        doc = self._nlp(text)
+
+        lines = text.splitlines()
+        starts = [0]
+        for line in lines:
+            starts.append(starts[-1] + len(line) + 1)  # +1 for the '\n' splitlines dropped
+
+        # Group place and person entities by line. An address line has at least one place
+        # and is mostly made of place/person spans - spaCy sometimes tags part of a
+        # "City, State" line as PERSON, so person spans count toward the coverage too.
+        ents_by_line: dict[int, list] = {}
+        for ent in doc.ents:
+            if ent.label_ in _LOC_LABELS or ent.label_ == "PERSON":
+                line_no = bisect.bisect_right(starts, ent.start_char) - 1
+                ents_by_line.setdefault(line_no, []).append(ent)
+
+        masked: list[str] = []
+        for index, line in enumerate(lines):
+            ents = ents_by_line.get(index, [])
+            has_place = any(e.label_ in _LOC_LABELS for e in ents)
+            if has_place:
+                alpha = re.sub(r"[^A-Za-z]", "", line)
+                covered = re.sub(r"[^A-Za-z]", "", " ".join(e.text for e in ents))
+                if alpha and len(covered) >= 0.7 * len(alpha):
+                    masked.append(self._mask(line))
+                    continue
+            masked.append(line)
+        text = "\n".join(masked)
+
+        names = sorted(
+            {e.text.strip() for e in doc.ents if e.label_ == "PERSON" and len(e.text.strip()) >= 3},
+            key=len,
+            reverse=True,
+        )
+        for name in names:
+            text = re.sub(
+                rf"(?<!\w){re.escape(name)}(?!\w)",
+                lambda m: self._mask(m.group(0)),
+                text,
+            )
         return text

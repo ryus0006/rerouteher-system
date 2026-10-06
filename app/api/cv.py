@@ -59,6 +59,16 @@ async def parse_cv(request: Request, file: UploadFile = File(...)):
     except UnreadableCVError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
+    # Structure the masked text with the LLM (robust across CV layouts); keep the
+    # deterministic segmentation as a fallback when the LLM is unavailable or returns
+    # nothing usable. Only the already PII-masked raw_text is sent.
+    structurer = getattr(request.app.state, "cv_structure_service", None)
+    if structurer is not None and structurer.available:
+        structured = await structurer.structure(cv.raw_text)
+        if structured is not None:
+            experiences, skills = structured
+            cv = cv.model_copy(update={"experiences": experiences, "skill_mentions": skills})
+
     # Diagnostic: how the parser segmented the CV (title mislabels show up here). Logs the
     # experience structure only - titles/orgs/dates + lengths - not the full CV narrative.
     logger.info("cv parsed: experiences=%d skill_mentions=%d", len(cv.experiences), len(cv.skill_mentions))

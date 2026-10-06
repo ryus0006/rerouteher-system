@@ -16,7 +16,14 @@ from app.repositories.skills import SkillMatch, SkillRow
 from app.schemas.cv import CV, Experience
 from app.schemas.snapshot import Break, SnapshotRequest
 from app.services.occupation_matcher import OccupationMatch
-from app.services.snapshot import SnapshotService
+from app.services.snapshot import SnapshotService, _phrase_set
+
+
+def test_phrase_set_ignores_pii_redaction_markers():
+    phrases = _phrase_set("built apis using [email] and sql, redacted [phone]")
+    # The inner words of redaction markers must not become skill phrases.
+    assert "email" not in phrases and "phone" not in phrases
+    assert "sql" in phrases
 
 pytestmark = pytest.mark.asyncio
 

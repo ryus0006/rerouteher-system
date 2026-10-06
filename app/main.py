@@ -19,6 +19,7 @@ from app.db import SessionLocal
 from app.repositories import skills as skills_repo
 from app.services.account import AccountService
 from app.services.cv_extractor import CVExtractor
+from app.services.cv_structure import CvStructureService
 from app.services.cv_generation import CvGenerationService
 from app.services.embedder import Embedder
 from app.services.companion import CompanionService
@@ -129,6 +130,8 @@ async def lifespan(app: FastAPI):
     # One Gemini client is shared by the companion and the learning fill.
     llm = GeminiClient.from_settings(settings)
     app.state.cv_generation_service = CvGenerationService(llm)
+    # Structures masked CV text into experiences/skills; degrades to the deterministic parse.
+    app.state.cv_structure_service = CvStructureService(llm)
     # Companion resolves a self-declared occupation to a role via the snapshot service
     # (same embedding + rerank path), so it is wired here where that service exists.
     app.state.companion_service = CompanionService(

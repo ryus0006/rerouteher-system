@@ -65,6 +65,62 @@ def test_pii_is_redacted_from_raw_text():
     assert "[phone]" in cv.raw_text
 
 
+class _Ent:
+    def __init__(self, text, label, start):
+        self.text = text
+        self.label_ = label
+        self.start_char = start
+        self.end_char = start + len(text)
+
+
+class _Doc:
+    def __init__(self, ents):
+        self.ents = ents
+
+
+def _fake_nlp(spec):
+    """Minimal spaCy stand-in: tags the given (surface, label) pairs wherever they occur."""
+    def nlp(text):
+        ents = []
+        for surface, label in spec:
+            index = text.find(surface)
+            if index >= 0:
+                ents.append(_Ent(surface, label, index))
+        return _Doc(ents)
+
+    return nlp
+
+
+def test_redacts_name_and_address_but_keeps_embedded_place_names():
+    nlp = _fake_nlp(
+        [
+            ("Kelvin Ku Teck Foong", "PERSON"),
+            ("Subang Jaya", "GPE"),
+            ("Selangor", "GPE"),
+            ("Malaysia", "GPE"),
+        ]
+    )
+    extractor = CVExtractor(nlp=nlp, skill_dictionary=SKILLS)
+    cv = extractor.parse(
+        _pdf(
+            "Kelvin Ku Teck Foong\n"
+            "Subang Jaya, Selangor\n"
+            "Work Experience\n"
+            "Manager\n"
+            "Grab Malaysia\n"
+            "2019 - 2021\n"
+            "Did things.\n"
+        )
+    )
+    # Name and address line are masked (majority obscured), not left readable.
+    assert "Kelvin Ku Teck Foong" not in cv.raw_text
+    assert "K*****" in cv.raw_text  # "Kelvin" -> first letter kept, rest masked
+    assert "Subang Jaya" not in cv.raw_text and "Selangor" not in cv.raw_text
+    assert "*" in cv.raw_text
+    # A place name inside an employer line is not an address line and stays.
+    assert "Grab Malaysia" in cv.raw_text
+
+
 def test_scanned_pdf_is_unreadable():
     # a PDF page with no text layer (image-only) -> no extractable text
     doc = pymupdf.open()

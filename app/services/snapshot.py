@@ -46,6 +46,9 @@ _OCCUPATION_OVERRIDE_MARGIN = 0.25
 def _phrase_set(text_lower: str, max_n: int = _MAX_PHRASE_WORDS) -> set[str]:
     """Word/phrase tokens (1..max_n grams) so short skill terms match on word
     boundaries, not as substrings inside larger words."""
+    # Drop PII redaction placeholders ([email], [phone], [name], [address]) so their
+    # inner words (e.g. "email") are not matched as skills (e.g. Electronic Communication).
+    text_lower = re.sub(r"\[[a-z]+\]", " ", text_lower)
     words = _WORD_RE.findall(text_lower)
     phrases: set[str] = set()
     for n in range(1, max_n + 1):
