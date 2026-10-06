@@ -52,6 +52,7 @@ class EmployerService:
                     industry=emp.industry,
                     location=emp.location,
                     logo=None,
+                    logo_url=emp.logo_url,
                     website=emp.website,
                     summary=emp.summary,
                     discloses=emp.discloses,

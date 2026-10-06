@@ -35,6 +35,7 @@ def _row(**over):
         sector="Financial Services",
         location="Kuala Lumpur",
         website="https://www.cimb.com/",
+        logo_url="https://logo.clearbit.com/cimb.com",
         evidence_note="Family-friendly policies and flexible work.",
         evidence_report_url="https://www.cimb.com/content/dam/report.pdf",
         evidence_report_year=2024,

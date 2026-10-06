@@ -17,6 +17,7 @@ def _emp(id, name, discloses, report_url="https://r", logo_text="L"):
         industry="X",
         location="KL",
         website="https://w",
+        logo_url="https://logo.example/l.png",
         summary="...",
         discloses=discloses,
         report_label="Sustainability Report 2024",

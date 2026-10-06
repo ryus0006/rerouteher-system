@@ -12,6 +12,7 @@ class EmployerEvidence:
     industry: str | None
     location: str | None
     website: str | None
+    logo_url: str | None
     summary: str | None
     discloses: list[str]
     report_label: str | None
@@ -59,6 +60,7 @@ async def get_employers_with_evidence(session: AsyncSession) -> list[EmployerEvi
         await session.execute(
             text(
                 "SELECT em.employer_id, em.name, em.sector, em.location, em.website, "
+                "em.logo_url, "
                 "em.report_url AS employer_report_url, "
                 "em.report_year AS employer_report_year, "
                 "ev.evidence_note, ev.report_url AS evidence_report_url, "
@@ -82,6 +84,7 @@ async def get_employers_with_evidence(session: AsyncSession) -> list[EmployerEvi
                 industry=r.sector,
                 location=r.location,
                 website=r.website,
+                logo_url=r.logo_url,
                 summary=r.evidence_note,
                 discloses=_disclosures(r),
                 report_label=label,

@@ -25,7 +25,23 @@ ALTER TABLE IF EXISTS rerouteher.roles
 
 ALTER TABLE IF EXISTS rerouteher.employers
     ADD COLUMN IF NOT EXISTS location text,
-    ADD COLUMN IF NOT EXISTS website text;
+    ADD COLUMN IF NOT EXISTS website text,
+    ADD COLUMN IF NOT EXISTS logo_url text;
+
+-- Employer card logos, by image URL. Populate one row per employer; the card falls
+-- back to an initials badge when logo_url is empty. Only sets rows not already set,
+-- so manual overrides survive a re-run.
+UPDATE rerouteher.employers AS e
+SET logo_url = v.logo_url
+FROM (VALUES
+    ('1066', 'https://logo.clearbit.com/rhbgroup.com'),
+    ('4677', 'https://logo.clearbit.com/ytl.com'),
+    ('6012', 'https://logo.clearbit.com/maxis.com.my'),
+    ('1155', 'https://logo.clearbit.com/maybank.com'),
+    ('5183', 'https://logo.clearbit.com/petronas.com')
+) AS v(employer_id, logo_url)
+WHERE e.employer_id = v.employer_id
+  AND COALESCE(btrim(e.logo_url), '') = '';
 
 CREATE TABLE IF NOT EXISTS rerouteher.job_search
 (

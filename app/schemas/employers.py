@@ -66,6 +66,7 @@ class EmployerMatchOut(BaseModel):
     industry: str | None = None
     location: str | None = None
     logo: LogoOut | None = None
+    logo_url: str | None = None
     website: str | None = None
     summary: str | None = None
     discloses: list[str] = []
