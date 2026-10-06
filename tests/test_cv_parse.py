@@ -121,6 +121,46 @@ def test_redacts_name_and_address_but_keeps_embedded_place_names():
     assert "Grab Malaysia" in cv.raw_text
 
 
+def test_masks_all_caps_header_name_and_keeps_employer_with_city():
+    # No spaCy: the header is masked positionally, so an all-caps name (which NER misses)
+    # is still redacted, while an employer line that contains a city is left intact.
+    cv = _extractor().parse(
+        _pdf(
+            "SITI NUR AISYAH BINTI ABDULLAH\n"
+            "Kuala Lumpur, Malaysia\n"
+            "siti@example.com | +60 12-345 6789\n"
+            "Work Experience\n"
+            "Senior Software Developer\n"
+            "Axiata Digital Labs, Kuala Lumpur\n"
+            "Jan 2021 - Dec 2022\n"
+            "Built backend services.\n"
+        )
+    )
+    assert "SITI NUR AISYAH BINTI ABDULLAH" not in cv.raw_text  # all-caps name masked
+    assert "S***" in cv.raw_text
+    assert "Kuala Lumpur, Malaysia" not in cv.raw_text  # header address line masked
+    assert "Axiata Digital Labs, Kuala Lumpur" in cv.raw_text  # employer line untouched
+
+
+def test_masks_combined_header_line_keeping_contact_placeholders():
+    # One header line holds address, contact and a profile URL. The contact placeholders
+    # survive while the address and the name-bearing URL are masked.
+    cv = _extractor().parse(
+        _pdf(
+            "NURUL AIN BINTI HASHIM\n"
+            "Shah Alam, Selangor, Malaysia | nurul.ain@email.com | +60198765432 | "
+            "linkedin.com/in/nurul-ain-hashim\n"
+            "Professional Summary\n"
+            "Mechanical Engineer with experience in HVAC.\n"
+        )
+    )
+    rt = cv.raw_text
+    assert "[email]" in rt and "[phone]" in rt  # contact placeholders preserved
+    assert "NURUL AIN BINTI HASHIM" not in rt  # name masked
+    assert "Shah Alam" not in rt  # address masked
+    assert "nurul-ain-hashim" not in rt  # profile URL handle (embeds the name) masked
+
+
 def test_scanned_pdf_is_unreadable():
     # a PDF page with no text layer (image-only) -> no extractable text
     doc = pymupdf.open()

@@ -9,7 +9,6 @@ Pipeline:
 """
 from __future__ import annotations
 
-import bisect
 import logging
 import re
 
@@ -30,8 +29,9 @@ _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE_RE = re.compile(r"(?<!\w)(\+?\d[\d\s().\-]{7,}\d)(?!\w)")
 # A four-digit to four-digit span is a year range (e.g. 2019-2023), not a phone number.
 _YEAR_RANGE_RE = re.compile(r"(?:19|20)\d{2}\s*[-–—]\s*(?:19|20)\d{2}")
-# spaCy entity labels for places; a line made mostly of these is a personal address line.
-_LOC_LABELS = {"GPE", "LOC", "FAC"}
+# The candidate's name and address sit in the first few header lines; mask at most this many
+# content lines before the first section heading so the body is never touched.
+_MAX_HEADER_MASK_LINES = 3
 
 # --- Section headers ---
 _EXPERIENCE_HEADER_RE = re.compile(
@@ -40,7 +40,8 @@ _EXPERIENCE_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _OTHER_SECTION_RE = re.compile(
-    r"^\s*(education|skills?|technical\s+skills?|certifications?|projects?|awards?"
+    r"^\s*((?:professional|career|personal)\s+(?:summary|profile|objective|statement)"
+    r"|education|skills?|technical\s+skills?|certifications?|projects?|awards?"
     r"|references?|summary|profile|objective|interests?|languages?|volunteer"
     r"|publications?|achievements?|contact)\s*:?\s*$",
     re.IGNORECASE,
@@ -440,52 +441,33 @@ class CVExtractor:
         )
 
     def _redact_entities(self, text: str) -> str:
-        """Mask personal names and address lines via spaCy NER so the candidate is not
-        identifiable, without aiming for perfect removal. Works across CV layouts, not one
-        template: PERSON spans (the candidate and any referees) and lines that are mostly
-        place names (e.g. "Subang Jaya, Selangor") are partly masked. Place names embedded
-        in org/experience text ("Grab Malaysia") are left so skill/role matching still
-        works. Degrades to no-op when spaCy is unavailable."""
-        if self._nlp is None:
-            return text
-        doc = self._nlp(text)
-
-        lines = text.splitlines()
-        starts = [0]
-        for line in lines:
-            starts.append(starts[-1] + len(line) + 1)  # +1 for the '\n' splitlines dropped
-
-        # Group place and person entities by line. An address line has at least one place
-        # and is mostly made of place/person spans - spaCy sometimes tags part of a
-        # "City, State" line as PERSON, so person spans count toward the coverage too.
-        ents_by_line: dict[int, list] = {}
-        for ent in doc.ents:
-            if ent.label_ in _LOC_LABELS or ent.label_ == "PERSON":
-                line_no = bisect.bisect_right(starts, ent.start_char) - 1
-                ents_by_line.setdefault(line_no, []).append(ent)
-
+        """Mask the candidate's name and address, which by CV convention sit in the header
+        (the first non-empty lines, before the first section heading). The name is almost
+        always the first line, so masking the header block positionally catches it even when
+        it is all-caps or non-Western - cases a trained NER model routinely misses - without
+        relying on spaCy. Everything after the header (job titles, employers, the body) is
+        left intact, and contact lines already reduced to [email]/[phone] are left alone.
+        Needs no spaCy, so it works whether or not a model is loaded."""
         masked: list[str] = []
-        for index, line in enumerate(lines):
-            ents = ents_by_line.get(index, [])
-            has_place = any(e.label_ in _LOC_LABELS for e in ents)
-            if has_place:
-                alpha = re.sub(r"[^A-Za-z]", "", line)
-                covered = re.sub(r"[^A-Za-z]", "", " ".join(e.text for e in ents))
-                if alpha and len(covered) >= 0.7 * len(alpha):
-                    masked.append(self._mask(line))
-                    continue
-            masked.append(line)
-        text = "\n".join(masked)
-
-        names = sorted(
-            {e.text.strip() for e in doc.ents if e.label_ == "PERSON" and len(e.text.strip()) >= 3},
-            key=len,
-            reverse=True,
-        )
-        for name in names:
-            text = re.sub(
-                rf"(?<!\w){re.escape(name)}(?!\w)",
-                lambda m: self._mask(m.group(0)),
-                text,
+        done = 0
+        header_over = False
+        for line in text.splitlines():
+            if header_over or not line.strip():
+                masked.append(line)
+                continue
+            # A section heading ("Work Experience", "Professional Summary", ...) ends the header.
+            if _EXPERIENCE_HEADER_RE.match(line) or _OTHER_SECTION_RE.match(line):
+                masked.append(line)
+                header_over = True
+                continue
+            # Mask the line but keep any [email]/[phone] placeholders the regex pass already
+            # produced intact, so a header line that mixes address, contact and a profile URL
+            # (which can embed the name) is still fully obscured.
+            parts = re.split(r"(\[email\]|\[phone\])", line)
+            masked.append(
+                "".join(p if p in ("[email]", "[phone]") else self._mask(p) for p in parts)
             )
-        return text
+            done += 1
+            if done >= _MAX_HEADER_MASK_LINES:
+                header_over = True
+        return "\n".join(masked)

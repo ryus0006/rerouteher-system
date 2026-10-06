@@ -49,6 +49,9 @@ def _phrase_set(text_lower: str, max_n: int = _MAX_PHRASE_WORDS) -> set[str]:
     # Drop PII redaction placeholders ([email], [phone], [name], [address]) so their
     # inner words (e.g. "email") are not matched as skills (e.g. Electronic Communication).
     text_lower = re.sub(r"\[[a-z]+\]", " ", text_lower)
+    # Drop masked tokens (e.g. "r****", "k*****") so a leftover initial from the masked
+    # header is not read as a skill (e.g. a stray "r" matching the R language).
+    text_lower = re.sub(r"\S*\*\S*", " ", text_lower)
     words = _WORD_RE.findall(text_lower)
     phrases: set[str] = set()
     for n in range(1, max_n + 1):
@@ -112,6 +115,10 @@ class SnapshotService:
         # 1. exact alias pass over the CV text (PhraseMatcher-equivalent, word-boundary safe)
         phrases = _phrase_set(cv.raw_text.lower())
         for term, skill_id in self._term_to_skill.items():
+            # Single-character aliases (e.g. "r", "c") match stray letters and are almost
+            # always noise; require them to come from a vetted skill mention (pass 2) instead.
+            if len(term) < 2:
+                continue
             if term in phrases:
                 found.setdefault(skill_id, self._professional(skill_id, term))
 
