@@ -130,10 +130,13 @@ _IMPROVE_TOOL = {
 }
 
 _DRAFT_SYSTEM_PROMPT = (
-    "You are a professional CV editor. Write concise, ATS-friendly wording for the "
+    "You are a professional CV editor. Write concise, ATS-friendly wording tailored to the "
     "selected target role using only the supplied journey evidence. Return exactly one "
-    "submit_cv_draft tool call. Write a neutral summary of one to three short sentences, "
-    "use action-led experience bullets, and select only exact supplied skill labels. "
+    "submit_cv_draft tool call. Write a neutral summary of one to three short sentences that "
+    "opens with her actual most recent role and real experience; never state or imply the "
+    "target role as a job title she already holds, and refer to the target role only as the "
+    "role she is aiming for (an objective), not her current identity. "
+    "Use action-led experience bullets, and select only exact supplied skill labels. "
     "Do not use first-person language. Do not invent employers, dates, achievements, "
     "metrics, responsibilities, qualifications, or skills. Do not mention caregiving, "
     "motherhood, family, childcare, a career break, or other protected personal context. "
@@ -143,7 +146,10 @@ _DRAFT_SYSTEM_PROMPT = (
 _IMPROVE_SYSTEM_PROMPT = (
     "You are a professional CV editor. Improve only the supplied section using only "
     "the supplied journey evidence. Return exactly one submit_cv_improvement tool call. "
-    "Do not invent facts, metrics, employers, dates, achievements, or skills. Do not use "
+    "Do not invent facts, metrics, employers, dates, achievements, or skills. When "
+    "improving the summary, keep it opening with her actual most recent role and real "
+    "experience; never present the target role as a job title she already holds, and refer "
+    "to it only as the role she is aiming for. Do not use "
     "first-person language or mention caregiving, motherhood, family, childcare, a career "
     "break, or other protected personal context. Include the exact source excerpt that "
     "supports the suggestion."
