@@ -33,13 +33,13 @@ RUN python -m spacy download en_core_web_sm
 # build performs no Hugging Face download and startup loads them from these paths.
 COPY models ./models
 
-# E7 whisper.cpp model (~148MB): downloaded and checksummed at build time rather than
-# committed to the repo. Multilingual ggml-base.bin, loaded by WhisperTranscriber at
-# runtime from app/config.py's whisper_model_path.
+# E7 whisper.cpp model (~141MB): downloaded and checksummed at build time rather than
+# committed to the repo. English-only ggml-base.en.bin (faster than multilingual base on
+# the CPU-only host), loaded by WhisperTranscriber at runtime from whisper_model_path.
 RUN mkdir -p models/whisper \
-    && curl -fsSL -o models/whisper/ggml-base.bin \
-       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin \
-    && echo "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe  models/whisper/ggml-base.bin" \
+    && curl -fsSL -o models/whisper/ggml-base.en.bin \
+       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
+    && echo "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002  models/whisper/ggml-base.en.bin" \
        | sha256sum -c -
 
 # Vendored TF-IDF occupation classifier (~25MB). Baked in so Tier 1 works on hosts

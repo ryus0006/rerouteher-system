@@ -92,13 +92,13 @@ All routes require a signed-in session (401 otherwise); a missing or another use
 
 - **Setup** - saved journey role + matched `recommended_roles`, deduplicated in journey order, confirmed against `roles`; 409/422 if incomplete or out of set.
 - **Sessions** - one persistent session per (role, focus); 5 questions (2 foundation / 2 intermediate / 1 advanced), general/role-specific/mixed pools, no repeats, refresh excludes the old 5 where alternatives exist.
-- **Recording** - FFmpeg normalise to mono 16kHz WAV, local whisper.cpp (one model, one semaphore, multilingual auto-detect) transcribes synchronously; raw audio never persisted.
+- **Recording** - FFmpeg normalise to mono 16kHz WAV, local whisper.cpp (one model, one semaphore, English-only) transcribes synchronously; raw audio never persisted.
 - **Privacy** - regex + spaCy redaction (email/phone/NRIC/address/PERSON/GPE/LOC) before anything is stored or sent to Gemini.
 - **Feedback** - one forced `submit_interview_feedback` tool call, no numeric score, titles/tags derived from `ai_evaluation_rubric` not the model; Gemini failure preserves the transcript and returns 503 (retryable).
 - **Retention** - 30-day background purge of transcript/feedback detail (tags + metadata kept); areas use latest-ready-per-question, sorted by frequency then title.
 - **Health** - `/api/health` reports `interview.transcription_available` / `feedback_available`; `degraded` if either is false, API itself still 200.
 
-The whisper.cpp model (`ggml-base.bin`) is downloaded + SHA-256-verified at image build time, not committed. `pytest` runs the full E7 suite without a DB, torch, or a real Gemini call (353/353 passing); `docker compose config` and the API image build both verified. A fresh Compose DB init (E7 table creation + the 7,592/10/44,902 seed counts against live Postgres) is not yet exercised here - `db/02_data.sql` (db team's base dump) is not present locally.
+The whisper.cpp model (`ggml-base.en.bin`) is downloaded + SHA-256-verified at image build time, not committed. `pytest` runs the full E7 suite without a DB, torch, or a real Gemini call (353/353 passing); `docker compose config` and the API image build both verified. A fresh Compose DB init (E7 table creation + the 7,592/10/44,902 seed counts against live Postgres) is not yet exercised here - `db/02_data.sql` (db team's base dump) is not present locally.
 
 ## Endpoints (It3 addition: E9 - Workplace Needs & Employer Fit)
 

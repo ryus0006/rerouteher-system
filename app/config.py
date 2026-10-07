@@ -82,8 +82,9 @@ class Settings(BaseSettings):
     # call); the model file is downloaded and checksummed at image build time, not
     # committed to the repo (see Dockerfile). Loading degrades to unavailable rather
     # than failing startup -- see WhisperTranscriber.load.
-    whisper_model_path: str = "models/whisper/ggml-base.bin"
-    whisper_threads: int = 4
+    whisper_model_path: str = "models/whisper/ggml-base.en.bin"
+    # Matched to the 1-2 vCPU deploy host; more threads than cores oversubscribes and slows it.
+    whisper_threads: int = 2
     # Source language forced on the transcriber; "auto" lets whisper detect.
     interview_transcription_language: str = "en"
     # PII redaction of transcripts; off because spaCy NER over-redacts and degrades answers.
