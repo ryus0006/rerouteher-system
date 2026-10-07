@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     # call); the model file is downloaded and checksummed at image build time, not
     # committed to the repo (see Dockerfile). Loading degrades to unavailable rather
     # than failing startup -- see WhisperTranscriber.load.
-    whisper_model_path: str = "models/whisper/ggml-base.bin"
+    whisper_model_path: str = "models/whisper/ggml-large-v3-turbo-q5_0.bin"
     whisper_threads: int = 4
     # Source language forced on the transcriber; "auto" lets whisper detect.
     interview_transcription_language: str = "en"

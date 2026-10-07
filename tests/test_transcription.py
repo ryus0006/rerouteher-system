@@ -261,7 +261,7 @@ def test_load_returns_unavailable_adapter_when_model_construction_fails(monkeypa
 
     monkeypatch.setattr(mod, "_construct_model", boom)
     transcriber = WhisperTranscriber.load(
-        "models/whisper/ggml-base.bin", threads=4, max_bytes=1000, max_seconds=60,
+        "models/whisper/ggml-large-v3-turbo-q5_0.bin", threads=4, max_bytes=1000, max_seconds=60,
         ffmpeg_timeout_s=10.0,
     )
     assert transcriber.available is False
@@ -271,7 +271,7 @@ def test_load_returns_available_adapter_when_model_constructs(monkeypatch):
     sentinel = FakeModel()
     monkeypatch.setattr(mod, "_construct_model", lambda model_path, threads: sentinel)
     transcriber = WhisperTranscriber.load(
-        "models/whisper/ggml-base.bin", threads=4, max_bytes=1000, max_seconds=60,
+        "models/whisper/ggml-large-v3-turbo-q5_0.bin", threads=4, max_bytes=1000, max_seconds=60,
         ffmpeg_timeout_s=10.0,
     )
     assert transcriber.available is True
