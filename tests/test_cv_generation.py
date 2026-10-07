@@ -176,6 +176,19 @@ async def test_generate_sends_only_allowlisted_context_and_persists_normalized_d
     assert repo.plans["aisha"]["unrelated"] == {"must": "survive"}
 
 
+async def test_regenerate_keeps_learned_skills(repo):
+    # A learned skill (from a finished focus area) is client-owned, not in the snapshot.
+    # It must be in the allowlist so a regenerate does not drop it.
+    repo.plans["aisha"]["learnedSkills"] = [{"skill": "Data Visualisation"}]
+    llm = FakeLlm(result=_function_result(skills=["Project coordination", "Data Visualisation"]))
+    service = CvGenerationService(llm)
+
+    result = await service.generate(object(), "aisha", regenerate=True)
+
+    assert "Data Visualisation" in result.draft["skills"]
+    assert "Project coordination" in result.draft["skills"]
+
+
 async def test_existing_role_draft_is_returned_without_calling_gemini(repo):
     existing = {
         "version": 3,
@@ -272,8 +285,53 @@ async def test_improve_returns_suggestion_without_persisting(repo):
     )
 
     assert result.section == "experience"
-    assert result.suggestion.startswith("Coordinated cross-team")
+    assert result.suggestion == "- Coordinated cross-team delivery and maintained project schedules."
     assert repo.writes == []
+
+
+def _improve_result_multi_bullet():
+    return GenerateResult(
+        content={
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": "submit_cv_improvement",
+                        "args": {
+                            "suggestion": (
+                                "- Coordinated cross-team delivery.\n"
+                                "- Maintained project schedules across teams."
+                            ),
+                            "evidence": "Coordinated delivery across teams and maintained project schedules.",
+                        },
+                    }
+                }
+            ]
+        },
+        tokens_in=10,
+        tokens_out=20,
+    )
+
+
+async def test_improve_experience_keeps_all_bullets(repo):
+    # A multi-bullet experience must come back with every bullet, not collapsed to one.
+    llm = FakeLlm(result=_improve_result_multi_bullet())
+    service = CvGenerationService(llm)
+
+    result = await service.improve(
+        object(),
+        "aisha",
+        role_id="role-project",
+        section="experience",
+        experience_index=0,
+        current_text=(
+            "- Coordinated delivery across teams and maintained project schedules.\n"
+            "- Maintained project schedules."
+        ),
+    )
+
+    lines = result.suggestion.split("\n")
+    assert len(lines) == 2
+    assert all(line.startswith("- ") for line in lines)
 
 
 async def test_missing_substantive_source_is_prerequisite_error(repo):

@@ -120,7 +120,13 @@ _IMPROVE_TOOL = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "suggestion": {"type": "string"},
+                    "suggestion": {
+                        "type": "string",
+                        "description": (
+                            "The improved section text. For an experience, include every "
+                            "bullet from the supplied text, one per line, each starting with '- '."
+                        ),
+                    },
                     "evidence": {"type": "string"},
                 },
                 "required": ["suggestion", "evidence"],
@@ -149,7 +155,10 @@ _IMPROVE_SYSTEM_PROMPT = (
     "Do not invent facts, metrics, employers, dates, achievements, or skills. When "
     "improving the summary, keep it opening with her actual most recent role and real "
     "experience; never present the target role as a job title she already holds, and refer "
-    "to it only as the role she is aiming for. Do not use "
+    "to it only as the role she is aiming for. When improving an experience, rewrite every "
+    "bullet in the supplied text and keep all of them: return the full set of bullets as the "
+    "suggestion, one bullet per line, each line starting with '- ', and never drop, merge, or "
+    "omit a bullet. Do not use "
     "first-person language or mention caregiving, motherhood, family, childcare, a career "
     "break, or other protected personal context. Include the exact source excerpt that "
     "supports the suggestion."
@@ -223,6 +232,8 @@ def _skills_from_plan(plan: dict[str, Any]) -> list[str]:
         "confirmedSkills",
         "reframed_skills",
         "reframedSkills",
+        "learned_skills",
+        "learnedSkills",
     ):
         raw_values = snapshot.get(key) or plan.get(key) or []
         for value in raw_values:
@@ -397,6 +408,22 @@ def _validate_bullet(value: Any) -> str:
     if re.search(r"\b(i|me|my|we|our)\b", text, re.IGNORECASE):
         raise CvGenerationError("invalid_cv_content", "bullet has first-person pronoun")
     return text
+
+
+def _validate_improved_experience(value: Any) -> str:
+    text = _safe_text(value)
+    if not text:
+        raise CvGenerationError("invalid_cv_content", "suggestion empty")
+    bullets = [
+        re.sub(r"^[-*•]\s*", "", line.strip())
+        for line in text.split("\n")
+        if line.strip()
+    ]
+    if not bullets:
+        raise CvGenerationError("invalid_cv_content", "suggestion empty")
+    if len(bullets) > 6:
+        raise CvGenerationError("invalid_cv_content", "too many bullets")
+    return "\n".join(f"- {_validate_bullet(bullet)}" for bullet in bullets)
 
 
 def _source_text(source: dict[str, str]) -> str:
@@ -681,7 +708,11 @@ class CvGenerationService:
                 tools=[_IMPROVE_TOOL],
             )
             args = _one_tool_args(result, "submit_cv_improvement")
-            suggestion = _validate_bullet(args.get("suggestion"))
+            suggestion = (
+                _validate_improved_experience(args.get("suggestion"))
+                if section == "experience"
+                else _validate_bullet(args.get("suggestion"))
+            )
             evidence = _safe_text(args.get("evidence"))
             if not evidence or not any(evidence in _source_text(source) for source in evidence_sources):
                 raise CvGenerationError("invalid_cv_content", "improve evidence not an exact source excerpt")
