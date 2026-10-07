@@ -711,7 +711,7 @@ class CvGenerationService:
             suggestion = (
                 _validate_improved_experience(args.get("suggestion"))
                 if section == "experience"
-                else _validate_bullet(args.get("suggestion"))
+                else _validate_summary(args.get("suggestion"))
             )
             evidence = _safe_text(args.get("evidence"))
             if not evidence or not any(evidence in _source_text(source) for source in evidence_sources):
