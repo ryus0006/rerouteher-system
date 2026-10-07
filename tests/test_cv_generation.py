@@ -289,6 +289,47 @@ async def test_improve_returns_suggestion_without_persisting(repo):
     assert repo.writes == []
 
 
+def _improve_summary_result():
+    return GenerateResult(
+        content={
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": "submit_cv_improvement",
+                        "args": {
+                            "suggestion": (
+                                "Operations coordinator with team delivery and "
+                                "scheduling experience, aiming for a project management role."
+                            ),
+                            "evidence": "Coordinated delivery and scheduling across teams",
+                        },
+                    }
+                }
+            ]
+        },
+        tokens_in=10,
+        tokens_out=20,
+    )
+
+
+async def test_improve_summary_accepts_synthesised_evidence(repo):
+    # A summary improvement must not require evidence to be a verbatim experience excerpt.
+    llm = FakeLlm(result=_improve_summary_result())
+    service = CvGenerationService(llm)
+
+    result = await service.improve(
+        object(),
+        "aisha",
+        role_id="role-project",
+        section="summary",
+        current_text="Operations professional ready for project management.",
+    )
+
+    assert result.section == "summary"
+    assert result.suggestion.startswith("Operations coordinator")
+    assert repo.writes == []
+
+
 def _improve_result_multi_bullet():
     return GenerateResult(
         content={

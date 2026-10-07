@@ -714,7 +714,12 @@ class CvGenerationService:
                 else _validate_summary(args.get("suggestion"))
             )
             evidence = _safe_text(args.get("evidence"))
-            if not evidence or not any(evidence in _source_text(source) for source in evidence_sources):
+            # Only an experience rewrite must quote an exact source excerpt; a summary
+            # synthesises across the journey, as in draft generation.
+            if section == "experience" and (
+                not evidence
+                or not any(evidence in _source_text(source) for source in evidence_sources)
+            ):
                 raise CvGenerationError("invalid_cv_content", "improve evidence not an exact source excerpt")
         except CvGenerationError as exc:
             logger.warning(
