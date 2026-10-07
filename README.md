@@ -98,7 +98,7 @@ All routes require a signed-in session (401 otherwise); a missing or another use
 - **Retention** - 30-day background purge of transcript/feedback detail (tags + metadata kept); areas use latest-ready-per-question, sorted by frequency then title.
 - **Health** - `/api/health` reports `interview.transcription_available` / `feedback_available`; `degraded` if either is false, API itself still 200.
 
-The whisper.cpp model (`ggml-large-v3-turbo-q5_0.bin`) is downloaded + SHA-256-verified at image build time, not committed. `pytest` runs the full E7 suite without a DB, torch, or a real Gemini call (353/353 passing); `docker compose config` and the API image build both verified. A fresh Compose DB init (E7 table creation + the 7,592/10/44,902 seed counts against live Postgres) is not yet exercised here - `db/02_data.sql` (db team's base dump) is not present locally.
+The whisper.cpp model (`ggml-base.bin`) is downloaded + SHA-256-verified at image build time, not committed. `pytest` runs the full E7 suite without a DB, torch, or a real Gemini call (353/353 passing); `docker compose config` and the API image build both verified. A fresh Compose DB init (E7 table creation + the 7,592/10/44,902 seed counts against live Postgres) is not yet exercised here - `db/02_data.sql` (db team's base dump) is not present locally.
 
 ## Endpoints (It3 addition: E9 - Workplace Needs & Employer Fit)
 

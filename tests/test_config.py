@@ -21,7 +21,7 @@ def test_session_cookie_defaults():
 
 def test_interview_transcription_defaults():
     s = Settings()
-    assert s.whisper_model_path == "models/whisper/ggml-large-v3-turbo-q5_0.bin"
+    assert s.whisper_model_path == "models/whisper/ggml-base.bin"
     assert s.whisper_threads == 4
     assert s.interview_max_audio_bytes == 25 * 1024 * 1024
     assert s.interview_max_audio_seconds == 300
