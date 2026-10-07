@@ -24,9 +24,12 @@ class Gap(BaseModel):
 
 class HeldSkill(BaseModel):
     # A role requirement the user already covers. Carries the ESCO id so the UI
-    # can request refresher resources for it deterministically (not by name).
+    # can request refresher resources for it deterministically (not by name), and
+    # the ESCO definition so the UI can show it on hover without a name lookup
+    # (met soft skills rarely share a name with the user's own extracted skills).
     skill_id: str
     skill: str
+    definition: str | None = None
 
 
 class GapResponse(BaseModel):

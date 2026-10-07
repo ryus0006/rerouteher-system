@@ -54,11 +54,16 @@ class GapService:
         exposure_w = self._settings.ai_exposure_weight(role.ai_exposure)
         readiness = self._readiness(role.skills, cov, exposure_w)
         # Held skills carry their ESCO id (deduped by id, listed by name) so the UI
-        # can fetch refresher resources for them deterministically.
-        held = {rs.skill_id: rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0}
+        # can fetch refresher resources for them deterministically, plus the ESCO
+        # definition so the UI can show it on hover.
+        held = {rs.skill_id: rs for rs in role.skills if cov[rs.skill_id] >= 1.0}
         skills_have = [
-            HeldSkill(skill_id=sid, skill=name)
-            for sid, name in sorted(held.items(), key=lambda kv: kv[1])
+            HeldSkill(
+                skill_id=rs.skill_id,
+                skill=rs.skill_name,
+                definition=self._definition(rs.definition),
+            )
+            for rs in sorted(held.values(), key=lambda rs: rs.skill_name)
         ]
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
         logger.info(
