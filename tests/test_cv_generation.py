@@ -35,7 +35,13 @@ def _plan():
             ],
             "skill_mentions": ["coordination"],
         },
-        "break": {"duration_years": 2, "activities": ["caregiving"]},
+        "break": {
+            "duration_years": 2,
+            "activities": [
+                "care_household.cared_for_children",
+                "finance.managed_budget_finances",
+            ],
+        },
         "snapshot": {
             "professional_skills": [
                 {"skill": "Project coordination"},
@@ -164,6 +170,12 @@ async def test_generate_sends_only_allowlisted_context_and_persists_normalized_d
     assert result.draft["experiences"][0]["organisation"] == "Acme Sdn Bhd"
     assert result.draft["experiences"][0]["description"].startswith("- ")
     assert result.draft["experiences"][1]["description"] == ""
+    assert result.draft["careerBreak"] == {
+        "duration": "About 2 years",
+        "description": (
+            "- Took a career break to care for children.\n- Managed the family budget."
+        ),
+    }
 
     prompt = llm.calls[0]["contents"][0]["parts"][0]["text"]
     assert "PRIVATE RAW CV" not in prompt

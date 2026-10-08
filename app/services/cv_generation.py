@@ -164,6 +164,20 @@ _IMPROVE_SYSTEM_PROMPT = (
     "supports the suggestion."
 )
 
+# The career-break section is the one place caregiving context is allowed, because the
+# section is explicitly about her career break. The no-invention rule still applies.
+_IMPROVE_BREAK_SYSTEM_PROMPT = (
+    "You are a professional CV editor improving the career-break section of a returning "
+    "professional's CV. Return exactly one submit_cv_improvement tool call. Rewrite the "
+    "supplied bullets into clear, confident, professional wording that frames the career "
+    "break positively, one bullet per line, each line starting with '- '. You MAY refer to "
+    "the career break and to caregiving or household responsibilities, since that is what "
+    "this section is about. Do NOT invent employers, job titles, dates, metrics, "
+    "achievements, certifications, or any activity that is not already in the supplied "
+    "bullets. Do not add skills. Do not use first-person language. The evidence field may "
+    "be left empty for this section."
+)
+
 
 def _safe_text(value: Any) -> str:
     if value is None:
@@ -270,6 +284,134 @@ def _activity_labels(plan: dict[str, Any]) -> list[str]:
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+def _break_duration_label(years: Any) -> str:
+    try:
+        value = float(years)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    if value < 1:
+        return "Less than a year"
+    whole = int(round(value))
+    return f"About {whole} {'year' if whole == 1 else 'years'}"
+
+
+# The four career-break categories shown on the intake step, in display order.
+_BREAK_CATEGORY_ORDER = [
+    "care_household",
+    "planning_organisation",
+    "finance_coordination",
+    "learning_community",
+]
+
+# One clean CV phrase per break activity, in infinitive ("inf", for the "Took a
+# career break to ..." lead) and past-tense ("past", for the remaining category
+# bullets). Grouped into one bullet per category so a long selection does not
+# become a single long line. No skills: those live in the Core skills section.
+_BREAK_ACTIVITY_PHRASES = {
+    "care_household.cared_for_children": ("care_household", "care for children", "cared for children"),
+    "care_household.ran_household": ("care_household", "run the household", "ran the household"),
+    "care_household.cared_for_elderly_sick_family": (
+        "care_household",
+        "care for elderly or sick family",
+        "cared for elderly or sick family",
+    ),
+    "planning.organised_family_logistics": (
+        "planning_organisation",
+        "organise day-to-day logistics",
+        "organised day-to-day logistics",
+    ),
+    "planning.managed_multiple_schedules": (
+        "planning_organisation",
+        "manage multiple schedules",
+        "managed multiple schedules",
+    ),
+    "planning.planned_events_gatherings": (
+        "planning_organisation",
+        "plan events and gatherings",
+        "planned events and gatherings",
+    ),
+    "planning.kept_household_records": (
+        "planning_organisation",
+        "keep household records",
+        "kept household records",
+    ),
+    "finance.managed_budget_finances": (
+        "finance_coordination",
+        "manage the family budget",
+        "managed the family budget",
+    ),
+    "finance.managed_home_repairs_vendors": (
+        "finance_coordination",
+        "manage home repairs and contractors",
+        "managed home repairs and contractors",
+    ),
+    "finance.handled_disputes_negotiations": (
+        "finance_coordination",
+        "handle disputes and negotiations",
+        "handled disputes and negotiations",
+    ),
+    "learning.taught_tutored_children": (
+        "learning_community",
+        "teach and tutor children",
+        "taught and tutored children",
+    ),
+    "learning.volunteered_community_roles": (
+        "learning_community",
+        "volunteer in the community",
+        "volunteered in the community",
+    ),
+}
+
+
+def _join_clause(items: list[str]) -> str:
+    """Natural-language join with an Oxford comma: a; a and b; a, b, and c."""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _career_break_section(plan: dict[str, Any]) -> dict[str, str] | None:
+    """Career-break CV section, built deterministically from the journey's break.
+
+    Activities are grouped by their intake category into one bullet each: the first
+    leads with "Took a career break to <infinitives>", the rest are past-tense
+    sentences. Returns None when no recognised break activity is recorded.
+    """
+    raw_break = plan.get("break") or {}
+    activity_ids = [a for a in (raw_break.get("activities") or []) if isinstance(a, str)]
+    # Group selected activities by category, keeping selection order within a group.
+    by_category: dict[str, list[str]] = {}
+    for activity_id in activity_ids:
+        entry = _BREAK_ACTIVITY_PHRASES.get(activity_id)
+        if entry:
+            by_category.setdefault(entry[0], []).append(activity_id)
+    if not by_category:
+        return None
+
+    bullets: list[str] = []
+    for category in _BREAK_CATEGORY_ORDER:
+        group = by_category.get(category)
+        if not group:
+            continue
+        if not bullets:
+            infinitives = [_BREAK_ACTIVITY_PHRASES[a][1] for a in group]
+            sentence = f"Took a career break to {_join_clause(infinitives)}."
+        else:
+            past = [_BREAK_ACTIVITY_PHRASES[a][2] for a in group]
+            clause = _join_clause(past)
+            sentence = f"{clause[:1].upper()}{clause[1:]}."
+        bullets.append(f"- {sentence}")
+
+    return {
+        "duration": _break_duration_label(raw_break.get("duration_years")),
+        "description": "\n".join(bullets),
+    }
 
 
 def _source_context(
@@ -424,6 +566,35 @@ def _validate_improved_experience(value: Any) -> str:
     if len(bullets) > 6:
         raise CvGenerationError("invalid_cv_content", "too many bullets")
     return "\n".join(f"- {_validate_bullet(bullet)}" for bullet in bullets)
+
+
+def _validate_break_bullet(value: Any) -> str:
+    # Like _validate_bullet, but the banned-term check is intentionally skipped: the
+    # career-break section is explicitly about caregiving / the break itself.
+    text = _safe_text(value)
+    if not text:
+        raise CvGenerationError("invalid_cv_content", "bullet empty")
+    if len(text) > 400:
+        raise CvGenerationError("invalid_cv_content", "bullet too long")
+    if "\n" in text:
+        raise CvGenerationError("invalid_cv_content", "bullet has newline")
+    if re.search(r"\b(i|me|my|we|our)\b", text, re.IGNORECASE):
+        raise CvGenerationError("invalid_cv_content", "bullet has first-person pronoun")
+    return text
+
+
+def _validate_improved_break(value: Any) -> str:
+    text = _safe_text(value)
+    if not text:
+        raise CvGenerationError("invalid_cv_content", "suggestion empty")
+    bullets = [
+        re.sub(r"^[-*•]\s*", "", line.strip()) for line in text.split("\n") if line.strip()
+    ]
+    if not bullets:
+        raise CvGenerationError("invalid_cv_content", "suggestion empty")
+    if len(bullets) > 6:
+        raise CvGenerationError("invalid_cv_content", "too many bullets")
+    return "\n".join(f"- {_validate_break_bullet(bullet)}" for bullet in bullets)
 
 
 def _source_text(source: dict[str, str]) -> str:
@@ -625,6 +796,10 @@ class CvGenerationService:
                 "The CV service is temporarily unavailable. Please try again later.",
             ) from exc
 
+        # Career break is built deterministically from the journey (not the LLM draft),
+        # so it is grounded in her recorded activities and carries no invented detail.
+        draft["careerBreak"] = _career_break_section(plan)
+
         updated_plan = copy.deepcopy(plan)
         book = _draft_book(updated_plan)
         book.setdefault("version", 3)
@@ -675,7 +850,7 @@ class CvGenerationService:
         plan = await self._repo.get_plan(session, username)
         role, experiences, _skills, context = _validate_setup(plan, role_id)
 
-        if section not in {"summary", "experience"}:
+        if section not in {"summary", "experience", "careerBreak"}:
             raise CvGenerationError("invalid_cv_setup", "The CV section is invalid.")
 
         if section == "experience":
@@ -697,7 +872,11 @@ class CvGenerationService:
 
         try:
             result = await self._llm.generate(
-                system_instruction=_IMPROVE_SYSTEM_PROMPT,
+                system_instruction=(
+                    _IMPROVE_BREAK_SYSTEM_PROMPT
+                    if section == "careerBreak"
+                    else _IMPROVE_SYSTEM_PROMPT
+                ),
                 contents=_prompt_for_improvement(
                     context,
                     section=section,
@@ -708,11 +887,12 @@ class CvGenerationService:
                 tools=[_IMPROVE_TOOL],
             )
             args = _one_tool_args(result, "submit_cv_improvement")
-            suggestion = (
-                _validate_improved_experience(args.get("suggestion"))
-                if section == "experience"
-                else _validate_summary(args.get("suggestion"))
-            )
+            if section == "experience":
+                suggestion = _validate_improved_experience(args.get("suggestion"))
+            elif section == "careerBreak":
+                suggestion = _validate_improved_break(args.get("suggestion"))
+            else:
+                suggestion = _validate_summary(args.get("suggestion"))
             evidence = _safe_text(args.get("evidence"))
             # Only an experience rewrite must quote an exact source excerpt; a summary
             # synthesises across the journey, as in draft generation.

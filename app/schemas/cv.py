@@ -38,7 +38,7 @@ class CvImproveRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     role_id: str = Field(alias="roleId", min_length=1)
-    section: Literal["summary", "experience"]
+    section: Literal["summary", "experience", "careerBreak"]
     experience_index: int | None = Field(default=None, alias="experienceIndex", ge=0)
     current_text: str = Field(default="", alias="currentText")
     previous_suggestions: list[str] = Field(
@@ -82,7 +82,7 @@ class CvGenerateResponse(BaseModel):
 
 
 class CvImproveResponse(BaseModel):
-    section: Literal["summary", "experience"]
+    section: Literal["summary", "experience", "careerBreak"]
     experience_index: int | None = None
     suggestion: str
     evidence: str
