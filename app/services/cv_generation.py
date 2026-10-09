@@ -286,17 +286,43 @@ def _activity_labels(plan: dict[str, Any]) -> list[str]:
     return labels
 
 
-def _break_duration_label(years: Any) -> str:
-    try:
-        value = float(years)
-    except (TypeError, ValueError):
-        return ""
-    if value <= 0:
-        return ""
-    if value < 1:
-        return "Less than a year"
-    whole = int(round(value))
-    return f"About {whole} {'year' if whole == 1 else 'years'}"
+def _latest_experience_end_year(experiences: list[dict[str, Any]] | None) -> int | None:
+    """Most recent four-digit year found in any experience's end date.
+
+    An ongoing role (blank end, or "present"/"current"/"now") is not a gap anchor,
+    so it is ignored. Returns None when no dated end year can be read.
+    """
+    latest: int | None = None
+    for item in experiences or []:
+        end = str(item.get("end") or "").strip()
+        if not end or end.lower() in {"present", "current", "now"}:
+            continue
+        match = re.search(r"(19|20)\d{2}", end)
+        if not match:
+            continue
+        year = int(match.group(0))
+        if latest is None or year > latest:
+            latest = year
+    return latest
+
+
+def _break_date_label(years: Any, experiences: list[dict[str, Any]] | None) -> str:
+    """Career-break date range, read as "<start year> - Present".
+
+    The start year is the end of her most recent dated role (the real gap on her
+    timeline). When no dated role exists, it falls back to the current year minus
+    her recorded break length. Returns "" when neither is available.
+    """
+    start_year = _latest_experience_end_year(experiences)
+    if start_year is None:
+        try:
+            value = float(years)
+        except (TypeError, ValueError):
+            return ""
+        if value <= 0:
+            return ""
+        start_year = datetime.now(timezone.utc).year - int(round(value))
+    return f"{start_year} - Present"
 
 
 # The four career-break categories shown on the intake step, in display order.
@@ -376,12 +402,15 @@ def _join_clause(items: list[str]) -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
-def _career_break_section(plan: dict[str, Any]) -> dict[str, str] | None:
+def _career_break_section(
+    plan: dict[str, Any], experiences: list[dict[str, Any]] | None = None
+) -> dict[str, str] | None:
     """Career-break CV section, built deterministically from the journey's break.
 
     Activities are grouped by their intake category into one bullet each: the first
     leads with "Took a career break to <infinitives>", the rest are past-tense
-    sentences. Returns None when no recognised break activity is recorded.
+    sentences. The date reads "<last job end year> - Present" so it covers the real
+    gap on her timeline. Returns None when no recognised break activity is recorded.
     """
     raw_break = plan.get("break") or {}
     activity_ids = [a for a in (raw_break.get("activities") or []) if isinstance(a, str)]
@@ -409,7 +438,7 @@ def _career_break_section(plan: dict[str, Any]) -> dict[str, str] | None:
         bullets.append(f"- {sentence}")
 
     return {
-        "duration": _break_duration_label(raw_break.get("duration_years")),
+        "duration": _break_date_label(raw_break.get("duration_years"), experiences),
         "description": "\n".join(bullets),
     }
 
@@ -798,7 +827,7 @@ class CvGenerationService:
 
         # Career break is built deterministically from the journey (not the LLM draft),
         # so it is grounded in her recorded activities and carries no invented detail.
-        draft["careerBreak"] = _career_break_section(plan)
+        draft["careerBreak"] = _career_break_section(plan, draft.get("experiences"))
 
         updated_plan = copy.deepcopy(plan)
         book = _draft_book(updated_plan)

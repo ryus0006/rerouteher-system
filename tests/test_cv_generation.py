@@ -171,7 +171,7 @@ async def test_generate_sends_only_allowlisted_context_and_persists_normalized_d
     assert result.draft["experiences"][0]["description"].startswith("- ")
     assert result.draft["experiences"][1]["description"] == ""
     assert result.draft["careerBreak"] == {
-        "duration": "About 2 years",
+        "duration": "2021 - Present",
         "description": (
             "- Took a career break to care for children.\n- Managed the family budget."
         ),
