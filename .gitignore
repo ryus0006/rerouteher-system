@@ -32,6 +32,6 @@ GEMINI.md
 # reference + training/resume data. Obtain it from the db team and place at db/02_data.sql.
 db/02_data.sql
 
-# E7 whisper.cpp model: acquired (and checksum-verified) at image build time, not
-# committed. Place a local copy here to run the whisper_smoke test.
-models/whisper/
+# E7 Parakeet model: acquired (and checksum-verified) at image build time, not
+# committed. Place a local copy here to run the parakeet_smoke test.
+models/parakeet/

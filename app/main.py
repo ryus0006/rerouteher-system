@@ -42,7 +42,7 @@ from app.services.tavily import TavilySearcher
 from app.services.occupation_matcher import EscoTfidfMatcher
 from app.services.reranker import CrossEncoderReranker
 from app.services.snapshot import SnapshotService
-from app.services.transcription import WhisperTranscriber
+from app.services.transcription import ParakeetTranscriber
 
 configure_logging()
 logger = logging.getLogger("rerouteher")
@@ -168,16 +168,15 @@ async def lifespan(app: FastAPI):
         job_search=app.state.job_search_service,
     )
 
-    # E7 AI Interview Coach. A failed Whisper load degrades to an unavailable
+    # E7 AI Interview Coach. A failed Parakeet load degrades to an unavailable
     # transcriber (health reports degraded; endpoints return transcription_unavailable)
     # rather than failing startup. No audio/transcript content is ever logged here.
-    transcriber = WhisperTranscriber.load(
-        settings.whisper_model_path,
-        threads=settings.whisper_threads,
+    transcriber = ParakeetTranscriber.load(
+        settings.parakeet_model_dir,
+        threads=settings.parakeet_threads,
         max_bytes=settings.interview_max_audio_bytes,
         max_seconds=settings.interview_max_audio_seconds,
         ffmpeg_timeout_s=settings.interview_ffmpeg_timeout_s,
-        language=settings.interview_transcription_language,
     )
     # Reuses the same spaCy pipeline already loaded for CV parsing (PERSON/GPE/LOC
     # redaction) and the same shared Gemini client used by the companion.
@@ -200,7 +199,7 @@ async def lifespan(app: FastAPI):
 
     logger.info(
         "startup: embedder=%s tfidf=%s reranker=%s spacy=%s skill_dict=%d learning_fill=%s "
-        "whisper=%s feedback=%s",
+        "parakeet=%s feedback=%s",
         embedder is not None,
         tfidf_matcher is not None,
         reranker.model_id if reranker else None,

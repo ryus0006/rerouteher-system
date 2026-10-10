@@ -11,8 +11,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ca-certificates + curl: fetch the whisper model over HTTPS at build time. ffmpeg:
-# E7 audio normalisation at runtime (WhisperTranscriber shells out to it).
+# ca-certificates + curl: fetch the parakeet model over HTTPS at build time. ffmpeg:
+# E7 audio normalisation at runtime (ParakeetTranscriber shells out to it).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
@@ -33,13 +33,27 @@ RUN python -m spacy download en_core_web_sm
 # build performs no Hugging Face download and startup loads them from these paths.
 COPY models ./models
 
-# E7 whisper.cpp model (~141MB): downloaded and checksummed at build time rather than
-# committed to the repo. English-only ggml-base.en.bin (faster than multilingual base on
-# the CPU-only host), loaded by WhisperTranscriber at runtime from whisper_model_path.
-RUN mkdir -p models/whisper \
-    && curl -fsSL -o models/whisper/ggml-base.en.bin \
-       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
-    && echo "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002  models/whisper/ggml-base.en.bin" \
+# E7 Parakeet TDT 0.6B v2 model (~630MB, int8): downloaded and checksummed at build
+# time rather than committed to the repo. English-only (faster/smaller than the v3
+# multilingual build on the CPU-only host), loaded by ParakeetTranscriber at runtime
+# from parakeet_model_dir. Int8 encoder/decoder files only -- the fp32 variants in the
+# same upstream repo are not fetched.
+RUN mkdir -p models/parakeet \
+    && cd models/parakeet \
+    && curl -fsSL -O https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/config.json \
+    && curl -fsSL -O https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/vocab.txt \
+    && curl -fsSL -O https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/nemo128.onnx \
+    && curl -fsSL -O https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/encoder-model.int8.onnx \
+    && curl -fsSL -O https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/decoder_joint-model.int8.onnx \
+    && echo "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466  config.json" \
+       | sha256sum -c - \
+    && echo "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d  vocab.txt" \
+       | sha256sum -c - \
+    && echo "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f  nemo128.onnx" \
+       | sha256sum -c - \
+    && echo "3e0581fda6ab843888b51e56d7ee78b6d5bc3237ec113af1f732d1d5286aa155  encoder-model.int8.onnx" \
+       | sha256sum -c - \
+    && echo "a449f49acd68979d418651dd2dcb737cc0f1bf0225e009e29ee326354edbf7d3  decoder_joint-model.int8.onnx" \
        | sha256sum -c -
 
 # Vendored TF-IDF occupation classifier (~25MB). Baked in so Tier 1 works on hosts

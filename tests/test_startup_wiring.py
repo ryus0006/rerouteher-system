@@ -3,7 +3,7 @@ retention cleanup loop runs once immediately, reschedules every 24 hours, surviv
 failed run, and can be cancelled cleanly at shutdown.
 
 Heavy model loads are stubbed so this runs without torch, the joblib artifact, the
-real whisper model, or a DB.
+real parakeet model, or a DB.
 """
 import asyncio
 
@@ -13,7 +13,7 @@ import app.main as main_mod
 from app.services.interview import InterviewService
 from app.services.cv_generation import CvGenerationService
 from app.services.reranker import CrossEncoderReranker
-from app.services.transcription import WhisperTranscriber
+from app.services.transcription import ParakeetTranscriber
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,7 +41,7 @@ async def test_lifespan_wires_reranker_and_interview_dependencies(monkeypatch):
         CrossEncoderReranker, "load", classmethod(lambda cls, ids, cache: sentinel)
     )
     monkeypatch.setattr(
-        WhisperTranscriber, "load", staticmethod(lambda *a, **k: stub_transcriber)
+        ParakeetTranscriber, "load", staticmethod(lambda *a, **k: stub_transcriber)
     )
 
     real_init = main_mod.SnapshotService.__init__
@@ -65,14 +65,14 @@ async def test_lifespan_wires_reranker_and_interview_dependencies(monkeypatch):
     assert app.state.snapshot_service is not None
 
 
-async def test_lifespan_degrades_when_whisper_unavailable(monkeypatch):
+async def test_lifespan_degrades_when_parakeet_unavailable(monkeypatch):
     stub_transcriber = _StubTranscriber(available=False)
 
     monkeypatch.setattr(main_mod, "Embedder", lambda model_name: (_ for _ in ()).throw(RuntimeError()))
     monkeypatch.setattr(main_mod.EscoTfidfMatcher, "load", staticmethod(lambda path: None))
     monkeypatch.setattr(CrossEncoderReranker, "load", classmethod(lambda cls, ids, cache: None))
     monkeypatch.setattr(
-        WhisperTranscriber, "load", staticmethod(lambda *a, **k: stub_transcriber)
+        ParakeetTranscriber, "load", staticmethod(lambda *a, **k: stub_transcriber)
     )
 
     app = main_mod.create_app()

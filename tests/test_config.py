@@ -21,8 +21,8 @@ def test_session_cookie_defaults():
 
 def test_interview_transcription_defaults():
     s = Settings()
-    assert s.whisper_model_path == "models/whisper/ggml-base.en.bin"
-    assert s.whisper_threads == 2
+    assert s.parakeet_model_dir == "models/parakeet"
+    assert s.parakeet_threads == 2
     assert s.interview_max_audio_bytes == 25 * 1024 * 1024
     assert s.interview_max_audio_seconds == 300
     assert s.interview_ffmpeg_timeout_s == 45.0

@@ -78,15 +78,14 @@ class Settings(BaseSettings):
     foundit_base_url: str = "https://www.foundit.my"
     foundit_timeout_s: float = 20.0
 
-    # E7 AI Interview Coach. Transcription runs fully offline (whisper.cpp, no network
-    # call); the model file is downloaded and checksummed at image build time, not
-    # committed to the repo (see Dockerfile). Loading degrades to unavailable rather
-    # than failing startup -- see WhisperTranscriber.load.
-    whisper_model_path: str = "models/whisper/ggml-base.en.bin"
+    # E7 AI Interview Coach. Transcription runs fully offline (onnx-asr/Parakeet, no
+    # network call); the model files are downloaded and checksummed at image build time,
+    # not committed to the repo (see Dockerfile). Loading degrades to unavailable rather
+    # than failing startup -- see ParakeetTranscriber.load. English-only model, so there
+    # is no language setting to configure.
+    parakeet_model_dir: str = "models/parakeet"
     # Matched to the 1-2 vCPU deploy host; more threads than cores oversubscribes and slows it.
-    whisper_threads: int = 2
-    # Source language forced on the transcriber; "auto" lets whisper detect.
-    interview_transcription_language: str = "en"
+    parakeet_threads: int = 2
     # PII redaction of transcripts; off because spaCy NER over-redacts and degrades answers.
     interview_redaction_enabled: bool = False
     interview_max_audio_bytes: int = 25 * 1024 * 1024

@@ -1,5 +1,5 @@
 """E7 interview orchestration: setup/role allow-list, question selection, session
-lifecycle, recording/retry, areas aggregation, and retention. Whisper, FFmpeg, Gemini,
+lifecycle, recording/retry, areas aggregation, and retention. Parakeet, FFmpeg, Gemini,
 clock and random selection are all fakes; question selection is also tested directly
 as a pure function.
 """

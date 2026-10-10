@@ -1,12 +1,15 @@
-"""Local offline speech-to-text via whisper.cpp (E7 AI Interview Coach).
+"""Local offline speech-to-text via onnx-asr/Parakeet (E7 AI Interview Coach).
 
 Audio never leaves the machine and is never persisted: FFmpeg validates and
-normalises the upload to mono 16 kHz WAV off the event loop, whisper.cpp transcribes
-it, and only the transcript text is returned. A single asyncio.Semaphore(1) protects
-the one loaded model, since one whisper.cpp context does not support concurrent
-inference. Loading is resilient: if the model file or the pywhispercpp binding is
+normalises the upload to mono 16 kHz WAV off the event loop, the Parakeet TDT 0.6B v2
+ONNX model transcribes it, and only the transcript text is returned. A single
+asyncio.Semaphore(1) still caps concurrency to 1, matched to the 1-2 vCPU deploy host
+rather than any single-model-instance restriction (unlike whisper.cpp, onnxruntime
+sessions tolerate concurrent calls; there just isn't spare CPU to make that useful
+here). Loading is resilient: if the model files or the onnx-asr package are
 unavailable, `load()` returns an adapter whose `available` is False so the app still
 boots (app/main.py lifespan) and callers get `transcription_unavailable` at call time.
+English-only model: there is no language to detect or force.
 """
 from __future__ import annotations
 
@@ -107,14 +110,24 @@ def _wav_duration_seconds(wav_path: Path) -> float:
 
 
 def _construct_model(model_path: str, threads: int):
-    # imported lazily so the app boots without pywhispercpp or the model file present,
+    # imported lazily so the app boots without onnx-asr or the model files present,
     # and so a load failure is caught per-attempt by the caller.
-    from pywhispercpp.model import Model
+    import onnxruntime as rt
+    import onnx_asr
 
-    return Model(model_path, n_threads=threads, print_realtime=False, print_progress=False)
+    sess_options = rt.SessionOptions()
+    sess_options.intra_op_num_threads = threads
+
+    return onnx_asr.load_model(
+        "nemo-parakeet-tdt-0.6b-v2",
+        path=model_path,
+        quantization="int8",
+        sess_options=sess_options,
+        providers=["CPUExecutionProvider"],
+    )
 
 
-class WhisperTranscriber:
+class ParakeetTranscriber:
     def __init__(
         self,
         model,
@@ -122,14 +135,12 @@ class WhisperTranscriber:
         max_bytes: int,
         max_seconds: int,
         ffmpeg_timeout_s: float,
-        language: str = "en",
         available: bool = True,
     ) -> None:
         self._model = model
         self._max_bytes = max_bytes
         self._max_seconds = max_seconds
         self._ffmpeg_timeout_s = ffmpeg_timeout_s
-        self._language = language
         self._available = available
         self._lock = asyncio.Semaphore(1)
 
@@ -146,23 +157,22 @@ class WhisperTranscriber:
         max_bytes: int,
         max_seconds: int,
         ffmpeg_timeout_s: float,
-        language: str = "en",
-    ) -> "WhisperTranscriber":
+    ) -> "ParakeetTranscriber":
         try:
             model = _construct_model(model_path, threads)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "whisper model not loaded (%s) from %s; transcription disabled",
+                "parakeet model not loaded (%s) from %s; transcription disabled",
                 type(exc).__name__, model_path,
             )
             return cls(
                 None, max_bytes=max_bytes, max_seconds=max_seconds,
-                ffmpeg_timeout_s=ffmpeg_timeout_s, language=language, available=False,
+                ffmpeg_timeout_s=ffmpeg_timeout_s, available=False,
             )
-        logger.info("whisper model loaded: %s", model_path)
+        logger.info("parakeet model loaded: %s", model_path)
         return cls(
             model, max_bytes=max_bytes, max_seconds=max_seconds,
-            ffmpeg_timeout_s=ffmpeg_timeout_s, language=language, available=True,
+            ffmpeg_timeout_s=ffmpeg_timeout_s, available=True,
         )
 
     async def transcribe(self, audio: AudioInput) -> TranscriptionResult:
@@ -191,20 +201,13 @@ class WhisperTranscriber:
                 if duration_s > self._max_seconds:
                     raise TranscriptionError("recording_too_long")
 
-                if self._language == "auto":
-                    (language, _prob), _all_probs = self._model.auto_detect_language(str(wav_path))
-                else:
-                    language = self._language
-                segments = self._model.transcribe(str(wav_path), language=language, translate=False)
-                transcript = " ".join(
-                    seg.text.strip() for seg in segments if seg.text.strip()
-                )
+                transcript = self._model.recognize(str(wav_path)).strip()
 
                 if not any(ch.isalnum() for ch in transcript):
                     raise TranscriptionError("no_speech_detected")
 
                 return TranscriptionResult(
-                    transcript=transcript, detected_language=language, duration_s=duration_s,
+                    transcript=transcript, detected_language="en", duration_s=duration_s,
                 )
             finally:
                 src_path.unlink(missing_ok=True)
