@@ -66,8 +66,8 @@ SYSTEM_PROMPT = (
     "or tutoring, volunteering) and pass them as break.activities, so her break counts as "
     "real experience, never a blank gap.\n"
     "3. Employer priorities - LAST. Up to three things she most wants from an employer, from "
-    "flexible or remote work, childcare support, parental support, a return-to-work "
-    "programme, or an inclusive workplace, recorded as employerPriorities.\n"
+    "flexible or remote work, childcare support, parental support, or an inclusive workplace, "
+    "recorded as employerPriorities.\n"
     "The 'Current profile' note below is the single source of truth for what is actually "
     "saved; trust it over your memory of the chat. Look at which parts are still missing and "
     "ask one clear, warm follow-up for the FIRST still-missing part in the order above, one "
@@ -132,7 +132,6 @@ _VALID_PRIORITY_IDS = [
     "flexible_work",
     "childcare_support",
     "parental_support",
-    "returning_to_work",
     "inclusive_workplace",
 ]
 _MAX_PRIORITIES = 3
