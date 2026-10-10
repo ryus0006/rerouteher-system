@@ -54,6 +54,31 @@ def _full_pool(role_id="R1"):
     return pool
 
 
+def _tech_pool(role_id="R1"):
+    """Role pool matching the real technical spread: 0 technical at foundation,
+    1 at intermediate, 2 at advanced (3 technical total), the rest non-technical."""
+    pool = []
+    for c in ("introduction", "motivation", "career_growth", "questions_for_interviewer"):
+        pool.append(_q(f"{role_id}-fnd-{c}", role_id, "foundation", category=c))
+    pool.append(_q(f"{role_id}-int-tech", role_id, "intermediate", category="technical"))
+    for c in ("behavioural_a", "behavioural_b", "situational"):
+        pool.append(_q(f"{role_id}-int-{c}", role_id, "intermediate", category=c))
+    for n in (1, 2):
+        pool.append(_q(f"{role_id}-adv-tech{n}", role_id, "advanced", category="technical"))
+    for c in ("behavioural", "situational"):
+        pool.append(_q(f"{role_id}-adv-{c}", role_id, "advanced", category=c))
+    return pool
+
+
+def _mixed_tech_pool(role_id="R1"):
+    """Role tech pool plus general (role_id None) questions, for exercising mixed focus."""
+    pool = list(_tech_pool(role_id))
+    for d in ("foundation", "intermediate", "advanced"):
+        for i in range(4):
+            pool.append(_q(f"GEN-{d[:3]}-{i}", None, d, category=f"gen_{d}_{i % 2}"))
+    return pool
+
+
 def _slot_detail(role_id):
     return QuestionSlotDetail(
         1, "GEN-001" if role_id is None else "R1-int-0", role_id, "Question?", "cat", "foundation",
@@ -350,6 +375,32 @@ def test_role_specific_focus_selects_from_role_pool_only():
     picked = _select_questions(random.Random(2), pool, "R1", "role_specific", set())
     assert len(picked) == 5
     assert all(q.role_id == "R1" for q in picked)
+
+
+def test_role_specific_focus_is_technical_weighted():
+    pool = _tech_pool()
+    for seed in range(20):
+        picked = _select_questions(random.Random(seed), pool, "R1", "role_specific", set())
+        assert len(picked) == 5
+        # all available technical questions are included
+        assert len([q for q in picked if q.category == "technical"]) == 3
+        # a gentle foundation opener is kept
+        assert any(q.difficulty == "foundation" for q in picked)
+        # presented foundation -> intermediate -> advanced
+        order = ("foundation", "intermediate", "advanced")
+        idx = [order.index(q.difficulty) for q in picked]
+        assert idx == sorted(idx)
+
+
+def test_mixed_focus_weights_technical_in_role_specific_slots():
+    pool = _mixed_tech_pool()
+    for seed in range(20):
+        picked = _select_questions(random.Random(seed), pool, "R1", "mixed", set())
+        assert len(picked) == 5
+        # the role-specific intermediate and advanced slots are the technical ones
+        # (foundation has no technical question); the general slots stay non-technical.
+        role_tech = [q for q in picked if q.role_id == "R1" and q.category == "technical"]
+        assert len(role_tech) == 2
 
 
 def test_mixed_focus_splits_general_and_role_specific_per_difficulty():

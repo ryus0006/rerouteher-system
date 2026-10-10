@@ -30,6 +30,7 @@ from app.services.transcription import TranscriptionError
 
 _DIFFICULTIES = ("foundation", "intermediate", "advanced")
 _COUNTS_BY_DIFFICULTY = {"foundation": 2, "intermediate": 2, "advanced": 1}
+_SET_SIZE = sum(_COUNTS_BY_DIFFICULTY.values())
 
 
 class InterviewError(Exception):
@@ -52,22 +53,40 @@ def _bucket(pool, role_id, difficulty):
     return [q for q in pool if q.role_id == role_id and q.difficulty == difficulty]
 
 
-def _pick(rng: random.Random, candidates: list, count: int, exclude_ids: set[str]) -> list:
-    """Picks `count` distinct questions, preferring category diversity. Excludes
-    exclude_ids unless doing so would leave too few, in which case this call's pool is
-    treated as exhausted and reuse is allowed for it alone."""
+def _pick(
+    rng: random.Random, candidates: list, count: int, exclude_ids: set[str], prefer: str | None = None
+) -> list:
+    """Picks `count` distinct questions. When `prefer` is given, questions of that
+    category are taken first (so a scarce category such as technical is not crowded out);
+    the remaining slots then prefer category diversity. Excludes exclude_ids unless doing
+    so would leave too few, in which case this call's pool is treated as exhausted and
+    reuse is allowed for it alone."""
     pool = [q for q in candidates if q.question_id not in exclude_ids]
     if len(pool) < count:
         pool = list(candidates)
     pool = list(pool)
     rng.shuffle(pool)
 
-    picked, leftovers, seen_categories = [], [], set()
+    picked, picked_ids, seen_categories = [], set(), set()
+
+    if prefer:
+        for q in pool:
+            if len(picked) >= count:
+                break
+            if q.category == prefer:
+                picked.append(q)
+                picked_ids.add(q.question_id)
+                seen_categories.add(q.category)
+
+    leftovers = []
     for q in pool:
         if len(picked) >= count:
             break
+        if q.question_id in picked_ids:
+            continue
         if q.category not in seen_categories:
             picked.append(q)
+            picked_ids.add(q.question_id)
             seen_categories.add(q.category)
         else:
             leftovers.append(q)
@@ -78,26 +97,56 @@ def _pick(rng: random.Random, candidates: list, count: int, exclude_ids: set[str
     return picked[:count]
 
 
+def _select_role_specific(
+    rng: random.Random, pool: list, role_id: str, exclude_ids: set[str]
+) -> list:
+    """Role-specific practice is technical-weighted: take all of the role's technical
+    questions first, then fill the set with its non-technical ones - a gentle foundation
+    opener where one exists, then varied categories. Ordered foundation to advanced."""
+    role_pool = [q for q in pool if q.role_id == role_id]
+    technical = [q for q in role_pool if q.category == "technical"]
+    picked = _pick(rng, technical, min(len(technical), _SET_SIZE), exclude_ids)
+    chosen = {q.question_id for q in picked}
+    others = [q for q in role_pool if q.category != "technical" and q.question_id not in chosen]
+
+    if _SET_SIZE - len(picked) > 0:
+        foundation = [q for q in others if q.difficulty == "foundation"]
+        if foundation:
+            opener = _pick(rng, foundation, 1, exclude_ids | chosen)
+            picked += opener
+            chosen |= {q.question_id for q in opener}
+            others = [q for q in others if q.question_id not in chosen]
+    if _SET_SIZE - len(picked) > 0:
+        picked += _pick(rng, others, _SET_SIZE - len(picked), exclude_ids | chosen)
+
+    rng.shuffle(picked)  # vary same-difficulty order
+    picked.sort(key=lambda q: _DIFFICULTIES.index(q.difficulty))
+    return picked
+
+
 def _select_questions(
     rng: random.Random, pool: list, role_id: str, practice_focus: str, exclude_ids: set[str]
 ) -> list:
+    if practice_focus == "role_specific":
+        return _select_role_specific(rng, pool, role_id, exclude_ids)
+
     general = {d: _bucket(pool, None, d) for d in _DIFFICULTIES}
     role_specific = {d: _bucket(pool, role_id, d) for d in _DIFFICULTIES}
 
     if practice_focus == "general":
-        plan = [(general, d, _COUNTS_BY_DIFFICULTY[d]) for d in _DIFFICULTIES]
-    elif practice_focus == "role_specific":
-        plan = [(role_specific, d, _COUNTS_BY_DIFFICULTY[d]) for d in _DIFFICULTIES]
-    else:  # mixed: one general + one role-specific per foundation/intermediate, role-specific advanced
+        plan = [(general, d, _COUNTS_BY_DIFFICULTY[d], None) for d in _DIFFICULTIES]
+    else:  # mixed: one general + one role-specific per foundation/intermediate, role-specific
+        # advanced. The role-specific slots prefer technical, which is scarce (only ~3 of a
+        # role's 12 questions), so it is not crowded out by behavioural/situational.
         plan = [
-            (general, "foundation", 1), (role_specific, "foundation", 1),
-            (general, "intermediate", 1), (role_specific, "intermediate", 1),
-            (role_specific, "advanced", 1),
+            (general, "foundation", 1, None), (role_specific, "foundation", 1, "technical"),
+            (general, "intermediate", 1, None), (role_specific, "intermediate", 1, "technical"),
+            (role_specific, "advanced", 1, "technical"),
         ]
 
     by_difficulty: dict[str, list] = {d: [] for d in _DIFFICULTIES}
-    for bucket_map, difficulty, count in plan:
-        by_difficulty[difficulty].extend(_pick(rng, bucket_map[difficulty], count, exclude_ids))
+    for bucket_map, difficulty, count, prefer in plan:
+        by_difficulty[difficulty].extend(_pick(rng, bucket_map[difficulty], count, exclude_ids, prefer))
 
     ordered = []
     for difficulty in _DIFFICULTIES:
