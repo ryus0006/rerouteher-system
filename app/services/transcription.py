@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import struct
 import subprocess
 import tempfile
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,16 +91,19 @@ def _run_ffmpeg(src_path: Path, wav_path: Path, timeout_s: float) -> None:
 
 
 def _wav_duration_seconds(wav_path: Path) -> float:
-    """Read duration from the normalised WAV header (16-bit mono PCM)."""
-    with wav_path.open("rb") as f:
-        header = f.read(44)
-    if len(header) < 44 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+    """Read duration from the normalised WAV (16-bit mono PCM).
+
+    Uses the wave module rather than fixed header offsets, because FFmpeg writes a
+    LIST/INFO chunk before the data chunk.
+    """
+    try:
+        with wave.open(str(wav_path), "rb") as w:
+            frames, rate = w.getnframes(), w.getframerate()
+    except (wave.Error, EOFError) as exc:
+        raise TranscriptionError("invalid_audio") from exc
+    if rate <= 0:
         raise TranscriptionError("invalid_audio")
-    byte_rate = struct.unpack("<I", header[28:32])[0]
-    data_size = struct.unpack("<I", header[40:44])[0]
-    if byte_rate <= 0:
-        raise TranscriptionError("invalid_audio")
-    return data_size / byte_rate
+    return frames / rate
 
 
 def _construct_model(model_path: str, threads: int):

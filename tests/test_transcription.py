@@ -255,6 +255,36 @@ def test_wav_duration_reads_header():
         assert abs(mod._wav_duration_seconds(wav_path) - 2.5) < 0.05
 
 
+def test_wav_duration_skips_ffmpeg_list_chunk():
+    import struct
+    import tempfile
+    from pathlib import Path
+
+    # FFmpeg puts a LIST/INFO chunk between fmt and data; duration must still be right.
+    raw = _wav_bytes(3.0)
+    info = b"INFOISFT\x0e\x00\x00\x00Lavf61.7.100\x00\x00"
+    list_chunk = b"LIST" + struct.pack("<I", len(info)) + info
+    body = raw[12:36] + list_chunk + raw[36:]
+    ffmpeg_style = b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav_path = Path(tmp) / "a.wav"
+        wav_path.write_bytes(ffmpeg_style)
+        assert abs(mod._wav_duration_seconds(wav_path) - 3.0) < 0.05
+
+
+def test_wav_duration_rejects_non_wav():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav_path = Path(tmp) / "a.wav"
+        wav_path.write_bytes(b"not a wav file at all")
+        with pytest.raises(TranscriptionError) as exc:
+            mod._wav_duration_seconds(wav_path)
+        assert exc.value.code == "invalid_audio"
+
+
 def test_load_returns_unavailable_adapter_when_model_construction_fails(monkeypatch):
     def boom(model_path, threads):
         raise RuntimeError("model file missing")
