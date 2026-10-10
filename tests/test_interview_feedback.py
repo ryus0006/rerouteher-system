@@ -214,6 +214,38 @@ async def test_prohibited_inference_and_non_fabrication_instructions_present():
     assert "no numeric score" in system.lower()
 
 
+async def test_system_prompt_runs_relevance_check_before_praise():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call())])
+    await InterviewFeedbackService(llm).evaluate(_input())
+    system = llm.calls[0]["system"]
+    assert "answers_question" in system
+    assert "worked_well must be an empty list" in system
+    assert "open by recognising what she did well" not in system
+    params = llm.calls[0]["tools"][0]["function_declarations"][0]["parameters"]
+    assert params["properties"]["answers_question"]["type"] == "boolean"
+    assert "answers_question" in params["required"]
+
+
+async def test_off_topic_answer_drops_any_strengths_the_model_returns():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        answers_question=False,
+        summary="This answer did not address the question yet.",
+        worked_well=[{"criterion_id": "EVAL-02", "detail": "You were very concise."}],
+        what_to_improve=[{"criterion_id": "EVAL-01", "detail": "Start with one example."}],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(
+        _input(transcript="Sup? What's up? What's up?")
+    )
+    assert result.strengths == []
+    assert result.improvements[0].criterion_id == "EVAL-01"
+
+
+async def test_on_topic_answer_keeps_strengths():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(answers_question=True))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert result.strengths[0].criterion_id == "EVAL-01"
+
+
 async def test_rejects_unknown_criterion_id():
     llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
         worked_well=[{"criterion_id": "EVAL-99", "detail": "x"}],
