@@ -17,3 +17,22 @@ def test_session_cookie_defaults():
     assert s.session_secret  # non-empty
     assert s.session_https_only is False
     assert s.session_same_site == "lax"
+
+
+def test_interview_transcription_defaults():
+    s = Settings()
+    assert s.parakeet_model_dir == "models/parakeet"
+    assert s.parakeet_threads == 2
+    assert s.interview_max_audio_bytes == 25 * 1024 * 1024
+    assert s.interview_max_audio_seconds == 300
+    assert s.interview_ffmpeg_timeout_s == 45.0
+    assert s.interview_content_retention_days == 30
+
+
+def test_job_source_defaults():
+    s = Settings()
+    assert s.job_search_location == "Malaysia"
+    assert s.jooble_api_key == ""
+    assert s.jooble_api_key_2 == ""
+    assert s.jooble_base_url == "https://my.jooble.org/api"
+    assert s.foundit_base_url == "https://www.foundit.my"

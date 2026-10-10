@@ -7,7 +7,7 @@ from app.schemas.cv import CV
 
 
 class Break(BaseModel):
-    duration_years: float
+    duration_years: float | None = None
     activities: list[str] = []
 
 
@@ -32,6 +32,7 @@ class ProfessionalSkill(BaseModel):
     skill_id: str | None = None
     source: Literal["experience", "role_confirmed"] = "experience"
     evidence: str | None = None
+    definition: str | None = None
 
 
 class ReframedSkill(BaseModel):
@@ -39,6 +40,7 @@ class ReframedSkill(BaseModel):
     skill_id: str | None = None
     source: Literal["break"] = "break"
     from_activity: str | None = None
+    definition: str | None = None
 
 
 class PreviousOccupation(BaseModel):

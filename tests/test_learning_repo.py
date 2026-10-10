@@ -3,6 +3,7 @@ import datetime
 import pytest
 
 from app.repositories import learning as learning_repo
+from app.repositories import skills as skills_repo
 
 pytestmark = pytest.mark.asyncio
 
@@ -13,6 +14,9 @@ class FakeResult:
 
     def all(self):
         return self._rows
+
+    def first(self):
+        return self._rows[0] if self._rows else None
 
 
 class FakeRow:
@@ -85,3 +89,41 @@ async def test_get_curated_resources_null_duration_is_none():
 
 async def test_get_curated_resources_empty_ids_returns_empty():
     assert await learning_repo.get_curated_resources(FakeSession([]), []) == []
+
+
+async def test_get_curated_resources_uses_resource_id_as_deterministic_tie_breaker():
+    session = FakeSession([])
+    await learning_repo.get_curated_resources(session, ["s1"])
+    sql = session.executed[0][0]
+    assert "lrs.relevance DESC NULLS LAST" in sql
+    assert "lr.resource_id" in sql
+
+
+async def test_get_skill_by_id_maps_canonical_taxonomy_row():
+    row = FakeRow(
+        skill_id="s1",
+        canonical_name="SQL",
+        skill_type="technical",
+        definition="Working with structured data.",
+    )
+
+    out = await skills_repo.get_skill_by_id(FakeSession([row]), "s1")
+
+    assert out.skill_id == "s1"
+    assert out.canonical_name == "SQL"
+    assert out.definition == "Working with structured data."
+
+
+async def test_find_exact_skills_returns_canonical_rows_for_alias_query():
+    row = FakeRow(
+        skill_id="s1",
+        canonical_name="SQL",
+        skill_type="technical",
+        definition="Working with structured data.",
+    )
+    session = FakeSession([row])
+
+    out = await skills_repo.find_exact_skills(session, "database querying", limit=3)
+
+    assert [item.skill_id for item in out] == ["s1"]
+    assert "skill_aliases" in session.executed[0][0]

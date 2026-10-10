@@ -1,13 +1,26 @@
 """Schemas for POST /api/companion/ask (E8)."""
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.cv import CV
+from app.schemas.cv import CV, Experience
 from app.schemas.snapshot import Break
 
 
 class SkillChoice(BaseModel):
     skill_id: str
     skill_name: str
+    definition: str | None = None
+    similarity: float | None = None
+
+
+class ProfileSkillUpdate(BaseModel):
+    action: str
+    status: str
+    skill_id: str
+    skill: str | None = None
+    definition: str | None = None
+    snapshot: dict = {}
+    gap_result: dict | None = None
+    learned_skills: list[dict] = []
 
 
 class JourneyIn(BaseModel):
@@ -31,11 +44,47 @@ class JourneyIn(BaseModel):
     employerMatches: list[dict] = []
 
 
+class InterviewFeedbackItemIn(BaseModel):
+    title: str = ""
+    detail: str = ""
+
+
+class InterviewContextIn(BaseModel):
+    # Interview practice context carried in so Hera can coach on the current question.
+    question_id: str
+    question_text: str = ""
+    kind: str = ""
+    transcript: str | None = None
+    feedback_summary: str | None = None
+    strengths: list[InterviewFeedbackItemIn] = []
+    improvements: list[InterviewFeedbackItemIn] = []
+
+
+class DraftCv(BaseModel):
+    # Lenient mirror of CV for the in-progress draft: raw_text may be absent while
+    # the profile is still being filled, so it must not be required here.
+    raw_text: str = ""
+    experiences: list[Experience] = []
+    skill_mentions: list[str] = []
+
+
+class DraftIn(BaseModel):
+    # The profile the companion has drafted but not yet saved, echoed back each turn
+    # so the model sees the true form state (what update_profile has actually
+    # produced), not just its memory of the chat.
+    model_config = ConfigDict(populate_by_name=True)
+    cv: DraftCv | None = None
+    break_: Break | None = Field(default=None, alias="break")
+    employerPriorities: list[str] = []
+
+
 class AskRequest(BaseModel):
     question: str
     session_id: str
     journey: JourneyIn = JourneyIn()
+    draft: DraftIn | None = None
     current_page: str | None = None
+    interview: InterviewContextIn | None = None
 
 
 class JourneyUpdate(BaseModel):
@@ -64,3 +113,5 @@ class AskResponse(BaseModel):
     # The role_id the skill_choices belong to; the frontend records it as
     # roleSkillsOfferedForRoleId so the same role is not offered again.
     skill_choices_role_id: str | None = None
+    skill_matches: list[SkillChoice] | None = None
+    profile_skill_update: ProfileSkillUpdate | None = None

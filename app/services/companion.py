@@ -7,10 +7,21 @@ Snapshot generation is a later story; this only builds the profile.
 """
 import logging
 
+from pydantic import ValidationError
+
 from app.repositories import companion as companion_repo
+from app.repositories import interview as interview_repo
 from app.repositories import roles as roles_repo
-from app.schemas.companion import AskRequest, AskResponse, CtaOut, JourneyUpdate, SkillChoice
+from app.schemas.companion import (
+    AskRequest,
+    AskResponse,
+    CtaOut,
+    JourneyUpdate,
+    ProfileSkillUpdate,
+    SkillChoice,
+)
 from app.services.llm import LlmError
+from app.services.profile_skills import ProfileSkillError
 
 logger = logging.getLogger("rerouteher")
 
@@ -18,28 +29,78 @@ SYSTEM_PROMPT = (
     "You are ReRouteHer's re-entry companion, Hera, for Malaysian mothers returning to "
     "work. Be warm, concrete and brief; write in short plain sentences and split a long "
     "answer into two short messages rather than one long block.\n\n"
-    "If she has no results yet, help her build a career profile by chatting: her most "
-    "recent occupation, her skills, and her career break (how long and what she did - "
-    "caregiving counts as real experience, never a blank gap). Ask one clear follow-up "
-    "when something important is missing; do not guess. While she is still building, if "
-    "her CV's most recent experience looks years out of date, note it once and invite her "
-    "to add anything recent such as courses, volunteering, freelance or caregiving; once "
-    "her profile is complete do not raise it again. If she mentions what she "
-    "most wants from an employer (flexible or remote work, childcare support, parental "
-    "support, a return-to-work programme, or an inclusive workplace), capture up to three "
-    "as employerPriorities. Map what she did during her break to the closest of our fixed "
-    "activity ids (childcare, running the household, caring for elderly or sick family, "
-    "day-to-day coordination, managing schedules, event planning, paperwork and records, "
-    "budgeting, home repairs and contractors, negotiation, teaching or tutoring, "
-    "volunteering) and pass them as break.activities, so her break is recognised as real "
-    "experience, never a blank gap. When you have enough, call the update_profile tool with "
-    "a cv object (raw_text, experiences, skill_mentions), a break object (duration_years, "
-    "activities) and employerPriorities if she gave any, then tell her you have drafted "
-    "her profile and invite her to review and confirm it or ask for a change. Once you know "
-    "her most recent occupation, call offer_role_skills with it so she can tick the skills "
-    "she already has from that role. Only describe actions you have actually taken this turn "
-    "- do not say you have shown her a checklist or saved anything unless you called the "
-    "matching tool.\n\n"
+    "If she has no results yet, your job is to fill in her career profile by chatting, one "
+    "part at a time, IN THIS ORDER. The profile has four parts (her work history, the skills "
+    "for each role, her career break, and her employer priorities), and all four must be "
+    "filled before it is ready. Do not skip ahead to a later part while an earlier one is "
+    "still missing:\n"
+    "1. Work history and its skills - FIRST, and collected together as ONE group, one role at "
+    "a time. A role needs a job title, the employer, the start month and year and the end "
+    "month and year (or that she is still in it), and a short note on what she did. Dates on "
+    "a CV are month and year only - record start and end as month and year (for example "
+    "'May 2016'), never a full calendar date with a day, and never invent a day. If she "
+    "gives only a year, record just that year.\n"
+    "   DATES GATE (do this before anything else for each role): you MUST get her explicit "
+    "start and end from her own words. A length of time such as 'about 8 years', '8 years', "
+    "or 'a few years' is NOT a start and end - it is just a duration. Never convert a "
+    "duration into years or dates yourself, and never back-calculate from today. Until she "
+    "has told you the actual start (month and year, or at least the year) and the actual end "
+    "(or that she is still in it), you MUST NOT call update_profile for that role and you "
+    "MUST NOT call offer_role_skills for it; instead ask her, in one warm question, which "
+    "month and year it started and which month and year it ended. Only treat the dates as "
+    "known when she has stated them.\n"
+    "   Start by asking for her most recent role. Once you have the title, the employer AND "
+    "her stated start and end, handle the rest as a pair in the SAME turn: first call "
+    "update_profile to save the role, then immediately call offer_role_skills with that "
+    "role's occupation so she can tick the common skills for it, and capture any skill she "
+    "names herself in cv.skill_mentions. Only after the skills for that role are settled do "
+    "you ask whether she had an earlier role. If she did, repeat the exact same steps for it "
+    "- get its start and end from her, save the role, then offer its skills - and keep "
+    "looping until she says there are no more. Do not ask about earlier roles before you "
+    "have offered the skills for the current one, and do not move on to the career break "
+    "until every role and its skills are done.\n"
+    "2. Career break - SECOND. Roughly how long it lasted and what filled it. Map each "
+    "activity to the closest of our fixed ids (childcare, running the household, caring for "
+    "elderly or sick family, day-to-day coordination, managing schedules, event planning, "
+    "paperwork and records, budgeting, home repairs and contractors, negotiation, teaching "
+    "or tutoring, volunteering) and pass them as break.activities, so her break counts as "
+    "real experience, never a blank gap.\n"
+    "3. Employer priorities - LAST. Up to three things she most wants from an employer, from "
+    "flexible or remote work, childcare support, parental support, or an inclusive workplace, "
+    "recorded as employerPriorities.\n"
+    "The 'Current profile' note below is the single source of truth for what is actually "
+    "saved; trust it over your memory of the chat. Look at which parts are still missing and "
+    "ask one clear, warm follow-up for the FIRST still-missing part in the order above, one "
+    "part at a time; do not interrogate her. Never guess or invent details, and never turn a "
+    "duration like 'about 8 years' into specific start and end dates on your own - ask her "
+    "for the actual start and end year. If she does not remember exact dates, record the "
+    "approximate years she gives you.\n"
+    "Every time she gives or changes any detail, your very next action that turn MUST be to "
+    "call update_profile with the COMPLETE profile so far - the full cv.experiences list "
+    "(every role she has given, not only the latest), raw_text, skill_mentions, the break "
+    "and employerPriorities. Saying something in words does NOT save it: never tell her a "
+    "role, a break or any detail is recorded, noted or saved unless you called "
+    "update_profile with it in this same turn.\n"
+    "Keep going until all four parts are filled, then tell her the profile is ready and "
+    "invite her to review and confirm it. If at any point she asks to stop or to use what "
+    "she has, stop asking and invite her to review and confirm what is there. Only describe "
+    "actions you have actually taken this turn - do not say you have shown her a checklist "
+    "or saved anything unless you called the matching tool.\n\n"
+    "When she describes a professional skill she may have learned, use "
+    "search_profile_skills to find up to three matching skills from the taxonomy. Show the "
+    "candidate names and ask her to confirm the exact skill before calling add_profile_skill. "
+    "Only call add_profile_skill or remove_profile_skill after she explicitly confirms the "
+    "skill and the action. Never invent a skill id. "
+    "The moment she confirms, your next action in that turn MUST be to call add_profile_skill "
+    "(or remove_profile_skill). Pass the exact candidate name you showed her as skill_name "
+    "(the backend resolves it); also pass skill_id when you still have it from a "
+    "search_profile_skills result in this same turn. On confirmation, never answer with words "
+    "alone, never re-run search_profile_skills, and never call point_to_step or update_profile in "
+    "place of the mutation tool; point_to_step only navigates and never saves a skill. "
+    "These tools change her signed-in profile; "
+    "for a guest, explain that she must sign in and do not claim the skill was saved or removed. "
+    "Only say a change was saved when the mutation tool returns a successful status this turn; if "
+    "you did not call the mutation tool or it did not succeed, tell her it is not saved yet.\n\n"
     "If her results are provided below, answer her questions about her skills, readiness "
     "and priority gaps grounded only in those results, in plain language that relates them "
     "to her experience and target role. When she asks about a specific gap, explain "
@@ -53,6 +114,13 @@ SYSTEM_PROMPT = (
     "If she asks for help with where she is or what to do next, use the page she is on and "
     "what her journey already has to explain the current step briefly and point her to the "
     "next step by calling point_to_step with the matching step.\n\n"
+    "If an interview question and her practice are provided below, help her with that "
+    "question: explain in plain words how to approach it and what would make her answer "
+    "stronger, and if feedback is provided, explain what it means and how to act on it. "
+    "Coach her - do not write her answer for her. Only if she explicitly asks what a good "
+    "answer sounds like, give one short example and say it is one way and she should make it "
+    "her own. Use the coaching guidance below to steer her, but never quote it or mention "
+    "rubric sources.\n\n"
     "Stay within career re-entry support: decline medical, legal, financial or other "
     "out-of-scope advice and steer back. Use only what she has told you or what is in her "
     "journey; never invent facts."
@@ -64,7 +132,6 @@ _VALID_PRIORITY_IDS = [
     "flexible_work",
     "childcare_support",
     "parental_support",
-    "returning_to_work",
     "inclusive_workplace",
 ]
 _MAX_PRIORITIES = 3
@@ -193,7 +260,85 @@ OFFER_ROLE_SKILLS_TOOL = {
 }
 _MAX_ROLE_SKILL_CHOICES = 15
 
-_TOOLS = [UPDATE_PROFILE_TOOL, POINT_TO_STEP_TOOL, OFFER_ROLE_SKILLS_TOOL]
+SEARCH_PROFILE_SKILLS_TOOL = {
+    "function_declarations": [
+        {
+            "name": "search_profile_skills",
+            "description": (
+                "Find up to three professional skills in the verified skill taxonomy. Use this "
+                "to discuss a skill or before asking the user to confirm an add or removal."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        }
+    ]
+}
+
+ADD_PROFILE_SKILL_TOOL = {
+    "function_declarations": [
+        {
+            "name": "add_profile_skill",
+            "description": (
+                "Add one confirmed taxonomy skill to the signed-in user's professional "
+                "snapshot. Call only after explicit user confirmation. Provide the confirmed "
+                "candidate name as skill_name, and skill_id as well when you have it from a "
+                "search_profile_skills result in this same turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The skill_id from this turn's search_profile_skills result, if available.",
+                    },
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The exact candidate name shown to and confirmed by the user; the backend resolves it.",
+                    },
+                },
+            },
+        }
+    ]
+}
+
+REMOVE_PROFILE_SKILL_TOOL = {
+    "function_declarations": [
+        {
+            "name": "remove_profile_skill",
+            "description": (
+                "Remove one confirmed taxonomy skill from the signed-in user's professional "
+                "snapshot. Call only after explicit user confirmation. Provide the confirmed "
+                "candidate name as skill_name, and skill_id as well when you have it from a "
+                "search_profile_skills result in this same turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The skill_id from this turn's search_profile_skills result, if available.",
+                    },
+                    "skill_name": {
+                        "type": "string",
+                        "description": "The exact candidate name shown to and confirmed by the user; the backend resolves it.",
+                    },
+                },
+            },
+        }
+    ]
+}
+
+_TOOLS = [
+    UPDATE_PROFILE_TOOL,
+    POINT_TO_STEP_TOOL,
+    OFFER_ROLE_SKILLS_TOOL,
+    SEARCH_PROFILE_SKILLS_TOOL,
+    ADD_PROFILE_SKILL_TOOL,
+    REMOVE_PROFILE_SKILL_TOOL,
+]
 
 # Cap on tool-calling rounds per turn, so a model that keeps calling tools cannot loop
 # unbounded; on the cap we force one final answer with no tools.
@@ -222,12 +367,60 @@ def _function_calls(content: dict) -> list[dict]:
 
 
 class CompanionService:
-    def __init__(self, llm=None, repo=companion_repo, role_resolver=None) -> None:
+    def __init__(
+        self,
+        llm=None,
+        repo=companion_repo,
+        role_resolver=None,
+        profile_skill_service=None,
+    ) -> None:
         self._llm = llm
         self._repo = repo
         # anything exposing async resolve_role(title, skill_names, session) -> role|None;
         # the snapshot service provides it so the checklist role matches the derived one.
         self._role_resolver = role_resolver
+        self._profile_skill_service = profile_skill_service
+
+    @staticmethod
+    def _skill_choices(matches) -> list[SkillChoice]:
+        return [
+            SkillChoice(
+                skill_id=match.skill_id,
+                skill_name=match.canonical_name,
+                definition=getattr(match, "definition", None) or None,
+                similarity=getattr(match, "similarity", None),
+            )
+            for match in matches[:3]
+        ]
+
+    async def _resolve_profile_skill(self, args, session):
+        if self._profile_skill_service is None:
+            return None, []
+        skill_id = (args.get("skill_id") or "").strip()
+        if skill_id:
+            return skill_id, []
+        skill_name = (args.get("skill_name") or "").strip()
+        if not skill_name:
+            return None, []
+        choices = self._skill_choices(
+            await self._profile_skill_service.match_skills(session, skill_name, limit=3)
+        )
+        if len(choices) == 1:
+            return choices[0].skill_id, choices
+        return None, choices
+
+    @staticmethod
+    def _profile_skill_update(action: str, mutation) -> ProfileSkillUpdate:
+        return ProfileSkillUpdate(
+            action=action,
+            status=mutation.status,
+            skill_id=mutation.skill_id,
+            skill=mutation.skill,
+            definition=mutation.definition,
+            snapshot=mutation.snapshot,
+            gap_result=mutation.gap_result,
+            learned_skills=mutation.learned_skills,
+        )
 
     async def _role_skill_choices(self, occupation, req, session):
         """Resolve her occupation to a role and return (role_id, distinctive skill choices),
@@ -249,6 +442,66 @@ class CompanionService:
         if not choices:
             return None
         return role.role_id, choices
+
+    def _draft_note(self, req: AskRequest) -> str:
+        # Build mode only: give the model the true committed form state so it fills the
+        # missing parts and re-commits via update_profile instead of narrating. Once she
+        # has a saved CV or snapshot she is past building, so _journey_note takes over.
+        if req.journey.snapshot or req.journey.cv is not None:
+            return ""
+        draft = req.draft
+        experiences = list(draft.cv.experiences) if (draft and draft.cv) else []
+        break_ = draft.break_ if draft else None
+        priorities = list(draft.employerPriorities) if draft else []
+        confirmed = [s.skill_name for s in req.journey.confirmedSkills if s.skill_name]
+        mentions = list(draft.cv.skill_mentions) if (draft and draft.cv) else []
+        skills = confirmed + [m for m in mentions if m not in confirmed]
+
+        parts: list[str] = []
+        if experiences:
+            shown = []
+            for e in experiences:
+                span = " to ".join(x for x in [e.start, e.end] if x)
+                label = e.title or "role"
+                if e.organisation:
+                    label += f" at {e.organisation}"
+                if span:
+                    label += f" ({span})"
+                shown.append(label)
+            line = "FILLED work history: " + "; ".join(shown)
+            if any(not (e.title and e.organisation and e.start and e.end) for e in experiences):
+                line += " (a role is still missing its employer or dates - ask for the gap)"
+            parts.append(line)
+        else:
+            parts.append(
+                "MISSING work history: ask for her most recent role - job title, employer, "
+                "rough start and end - and save it with update_profile."
+            )
+
+        if skills:
+            parts.append("FILLED skills: " + ", ".join(skills[:12]))
+        else:
+            parts.append(
+                "MISSING skills: once you have her work history, call offer_role_skills so she "
+                "can tick her role skills."
+            )
+
+        if break_ is not None and (break_.duration_years or break_.activities):
+            bits = []
+            if break_.duration_years:
+                bits.append(f"about {break_.duration_years} years")
+            if break_.activities:
+                bits.append(", ".join(break_.activities))
+            parts.append("FILLED career break: " + "; ".join(bits))
+        else:
+            parts.append("MISSING career break: ask roughly how long it lasted and what filled it.")
+
+        if priorities:
+            parts.append("FILLED employer priorities: " + ", ".join(priorities))
+        else:
+            parts.append("MISSING employer priorities: ask what matters most to her in her next role.")
+
+        return "Current profile - " + " | ".join(parts)
 
     def _journey_note(self, req: AskRequest) -> str:
         j = req.journey
@@ -335,6 +588,40 @@ class CompanionService:
             bits.append("; ".join(parts) + ".")
         return ("Her employer matches: " + " ".join(bits)) if bits else ""
 
+    async def _interview_note(self, req: AskRequest, session) -> str:
+        iv = req.interview
+        if iv is None:
+            return ""
+        bits = [f'Interview question she is practising: "{iv.question_text}".']
+        if iv.kind:
+            bits.append(f"It is a {iv.kind.replace('_', '-')} question.")
+        if iv.transcript:
+            bits.append(f'Her latest answer transcript: "{iv.transcript}".')
+        if iv.feedback_summary:
+            bits.append(f"Feedback summary she received: {iv.feedback_summary}")
+        if iv.strengths:
+            bits.append(
+                "What worked well: "
+                + "; ".join(f"{s.title} - {s.detail}" for s in iv.strengths)
+                + "."
+            )
+        if iv.improvements:
+            bits.append(
+                "What to improve: "
+                + "; ".join(f"{s.title} - {s.detail}" for s in iv.improvements)
+                + "."
+            )
+        coaching = await interview_repo.get_question_coaching(session, iv.question_id)
+        if coaching is not None:
+            bits.append(
+                "Coaching guidance (do not quote): approach - "
+                f"{coaching.answer_framework}; a strong answer usually includes "
+                f"{coaching.answer_guidance}; strong-evidence signals - "
+                f"{coaching.strong_evidence_signals}; watch out for "
+                f"{coaching.watch_out_for}."
+            )
+        return " ".join(bits)
+
     async def ask(self, req: AskRequest, session, username: str | None) -> AskResponse:
         if self._llm is None:
             return AskResponse(answer=_NOT_AVAILABLE, sources=[], journey_update=None)
@@ -347,11 +634,15 @@ class CompanionService:
         contents.append({"role": "user", "parts": [{"text": req.question}]})
 
         system = SYSTEM_PROMPT
-        extras = " ".join(
-            p
-            for p in (self._journey_note(req), self._results_note(req), self._employer_note(req))
-            if p
-        )
+        notes = [
+            self._draft_note(req),
+            self._journey_note(req),
+            self._results_note(req),
+            self._employer_note(req),
+        ]
+        if req.interview is not None:
+            notes.append(await self._interview_note(req, session))
+        extras = " ".join(p for p in notes if p)
         if extras:
             system = f"{system}\n\nContext: {extras}"
 
@@ -359,6 +650,8 @@ class CompanionService:
         cta: CtaOut | None = None
         skill_choices = None
         skill_choices_role_id = None
+        skill_matches = None
+        profile_skill_update = None
         sources: list[str] = []
         tokens_in = 0
         tokens_out = 0
@@ -388,23 +681,47 @@ class CompanionService:
                     args = call.get("args") or {}
                     status = {"status": "ok"}
                     if name == "update_profile":
-                        journey_update = JourneyUpdate.model_validate(args)
-                        # Defend the fixed pick-list even though the tool enum constrains it:
-                        # drop anything unknown, keep order, cap at three.
-                        journey_update.employerPriorities = [
-                            p for p in journey_update.employerPriorities if p in _VALID_PRIORITY_IDS
-                        ][:_MAX_PRIORITIES]
-                        # Defend the fixed activity taxonomy: keep only ids the CareerBreak page
-                        # and caregiving_map recognise (so both can render/reframe them).
-                        if journey_update.break_ is not None:
-                            journey_update.break_.activities = [
-                                a
-                                for a in journey_update.break_.activities
-                                if a in _VALID_ACTIVITY_IDS
-                            ]
-                        if req.journey.cv is not None:
-                            sources.append("Your CV")
-                        status = {"status": "saved"}
+                        # The model must echo the COMPLETE profile each turn, but it
+                        # sometimes omits cv.raw_text when it is only adding or editing an
+                        # experience (for example adding an earlier role after the CV has
+                        # already been generated). raw_text is required on the CV schema, so
+                        # backfill it from the journey/draft already in the request instead
+                        # of letting a ValidationError bubble up as a 500 - which would also
+                        # strip the CORS headers and read as "failed to fetch" in the browser.
+                        cv_args = args.get("cv")
+                        if isinstance(cv_args, dict) and not cv_args.get("raw_text"):
+                            fallback_raw = ""
+                            if req.journey.cv is not None:
+                                fallback_raw = req.journey.cv.raw_text or ""
+                            if not fallback_raw and req.draft is not None and req.draft.cv is not None:
+                                fallback_raw = req.draft.cv.raw_text or ""
+                            cv_args["raw_text"] = fallback_raw
+                        try:
+                            journey_update = JourneyUpdate.model_validate(args)
+                        except ValidationError as exc:
+                            # Degrade gracefully: skip this bad tool call rather than 500.
+                            logger.warning("companion update_profile args invalid: %s", exc)
+                            journey_update = None
+                            status = {"status": "error"}
+                        else:
+                            # Defend the fixed pick-list even though the tool enum constrains it:
+                            # drop anything unknown, keep order, cap at three.
+                            journey_update.employerPriorities = [
+                                p
+                                for p in journey_update.employerPriorities
+                                if p in _VALID_PRIORITY_IDS
+                            ][:_MAX_PRIORITIES]
+                            # Defend the fixed activity taxonomy: keep only ids the CareerBreak
+                            # page and caregiving_map recognise (so both can render/reframe them).
+                            if journey_update.break_ is not None:
+                                journey_update.break_.activities = [
+                                    a
+                                    for a in journey_update.break_.activities
+                                    if a in _VALID_ACTIVITY_IDS
+                                ]
+                            if req.journey.cv is not None:
+                                sources.append("Your CV")
+                            status = {"status": "saved"}
                     elif name == "point_to_step":
                         mapped = _STEP_CTAS.get(args.get("step"))
                         if mapped:
@@ -418,6 +735,75 @@ class CompanionService:
                             status = {"status": "shown", "count": len(skill_choices)}
                         else:
                             status = {"status": "already_shown"}
+                    elif name == "search_profile_skills":
+                        if self._profile_skill_service is None:
+                            status = {"status": "temporarily_unavailable"}
+                        else:
+                            try:
+                                skill_matches = self._skill_choices(
+                                    await self._profile_skill_service.match_skills(
+                                        session, args.get("query") or "", limit=3
+                                    )
+                                )
+                                status = (
+                                    {
+                                        "status": "found",
+                                        "skills": [
+                                            item.model_dump(exclude_none=True)
+                                            for item in skill_matches
+                                        ],
+                                    }
+                                    if skill_matches
+                                    else {"status": "not_found", "skills": []}
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "companion profile skill search failed: %s",
+                                    type(exc).__name__,
+                                )
+                                status = {"status": "temporarily_unavailable"}
+                    elif name in {"add_profile_skill", "remove_profile_skill"}:
+                        action = "add" if name == "add_profile_skill" else "remove"
+                        if not username:
+                            status = {"status": "authentication_required"}
+                        elif self._profile_skill_service is None:
+                            status = {"status": "temporarily_unavailable"}
+                        else:
+                            try:
+                                skill_id, choices = await self._resolve_profile_skill(args, session)
+                                if choices:
+                                    skill_matches = choices
+                                if not skill_id:
+                                    status = {
+                                        "status": "skill_selection_required",
+                                        "skills": [
+                                            item.model_dump(exclude_none=True)
+                                            for item in (choices or [])
+                                        ],
+                                    }
+                                else:
+                                    mutation_method = (
+                                        self._profile_skill_service.add_skill
+                                        if action == "add"
+                                        else self._profile_skill_service.remove_skill
+                                    )
+                                    mutation = await mutation_method(session, username, skill_id)
+                                    profile_skill_update = self._profile_skill_update(
+                                        action, mutation
+                                    )
+                                    status = {
+                                        "status": mutation.status,
+                                        "skill_id": mutation.skill_id,
+                                        "skill": mutation.skill,
+                                    }
+                            except ProfileSkillError as exc:
+                                status = {"status": exc.kind, "message": exc.message}
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "companion profile skill mutation failed: %s",
+                                    type(exc).__name__,
+                                )
+                                status = {"status": "temporarily_unavailable"}
                     response_parts.append(
                         {"functionResponse": {"name": name, "response": status}}
                     )
@@ -464,4 +850,6 @@ class CompanionService:
             cta=cta,
             skill_choices=skill_choices,
             skill_choices_role_id=skill_choices_role_id,
+            skill_matches=skill_matches,
+            profile_skill_update=profile_skill_update,
         )

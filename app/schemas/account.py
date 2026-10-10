@@ -31,3 +31,13 @@ class SignInResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     status: str
+
+
+class ProfileSkillMutationResponse(BaseModel):
+    status: str
+    skill_id: str
+    skill: str | None = None
+    definition: str | None = None
+    snapshot: dict
+    gap_result: dict | None = None
+    learned_skills: list[dict] = Field(default_factory=list)

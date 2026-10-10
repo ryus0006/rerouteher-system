@@ -21,7 +21,7 @@ class FakeLearningService:
                     provider="YouTube",
                     logo="youtube",
                     format="Video",
-                    minutes=None,
+                    minutes=0,
                     cost="Free",
                     free=True,
                     url="https://www.youtube.com/results?search_query=x",

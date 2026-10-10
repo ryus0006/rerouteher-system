@@ -15,3 +15,15 @@ def test_professional_skill_allows_role_confirmed_source():
 
     ps = ProfessionalSkill(skill="SQL", skill_id="s1", source="role_confirmed")
     assert ps.source == "role_confirmed"
+
+
+def test_skill_definition_is_optional_and_serializes_as_null():
+    from app.schemas.snapshot import ProfessionalSkill, ReframedSkill
+
+    professional = ProfessionalSkill(skill="SQL")
+    reframed = ReframedSkill(skill="Coordination")
+
+    assert professional.definition is None
+    assert reframed.definition is None
+    assert professional.model_dump()["definition"] is None
+    assert reframed.model_dump()["definition"] is None

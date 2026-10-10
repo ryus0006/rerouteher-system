@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.repositories import roles as roles_repo
-from app.schemas.gap import Gap, GapRequest, GapResponse
+from app.schemas.gap import Gap, GapRequest, GapResponse, HeldSkill
 
 logger = logging.getLogger("rerouteher")
 
@@ -53,7 +53,18 @@ class GapService:
 
         exposure_w = self._settings.ai_exposure_weight(role.ai_exposure)
         readiness = self._readiness(role.skills, cov, exposure_w)
-        skills_have = sorted({rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0})
+        # Held skills carry their ESCO id (deduped by id, listed by name) so the UI
+        # can fetch refresher resources for them deterministically, plus the ESCO
+        # definition so the UI can show it on hover.
+        held = {rs.skill_id: rs for rs in role.skills if cov[rs.skill_id] >= 1.0}
+        skills_have = [
+            HeldSkill(
+                skill_id=rs.skill_id,
+                skill=rs.skill_name,
+                definition=self._definition(rs.definition),
+            )
+            for rs in sorted(held.values(), key=lambda rs: rs.skill_name)
+        ]
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
         logger.info(
             "gap: target_id=%s (%r) -> role_id=%s role_skills=%d have_ids=%d exact=%d embed=%d readiness=%.1f",
@@ -100,10 +111,18 @@ class GapService:
                     band=band,
                     importance=float(rs.importance),
                     uplift=uplift,
+                    definition=self._definition(rs.definition),
                 )
             )
         gaps.sort(key=lambda g: (g.uplift, g.importance), reverse=True)
         return gaps
+
+    @staticmethod
+    def _definition(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
 
     def _uplift(self, role_skills, cov: dict[str, float], exposure_w, base: float, skill_id: str) -> float:
         # marginal readiness gain if this skill were covered
