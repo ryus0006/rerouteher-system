@@ -276,6 +276,67 @@ async def test_filler_note_and_rule_reach_gemini():
     assert "Filler words (um, uh, erm, hmm): 3 in 9 words (frequent)" in user_text
     assert "silent pause" in system
     assert "lacking confidence" in system
+    assert "assess structure_and_clarity as at most partly_met" in system
+
+
+async def test_prompt_requires_checklist_watch_outs_and_impact_order():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call())])
+    await InterviewFeedbackService(llm).evaluate(_input())
+    system = llm.calls[0]["system"]
+    assert "For EVERY applicable criterion" in system
+    assert "Things to watch out for" in system
+    assert "The FIRST item must be the single change that would most improve" in system
+    assert "keep the most impactful three, giving watch-out issues priority" in system
+    params = llm.calls[0]["tools"][0]["function_declarations"][0]["parameters"]
+    assert "assessments" in params["required"]
+    verdict = params["properties"]["assessments"]["items"]["properties"]["verdict"]
+    assert verdict["enum"] == ["not_met", "partly_met", "met"]
+
+
+async def test_strength_not_assessed_as_met_is_dropped():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        assessments=[
+            {"criterion_id": "EVAL-01", "evidence": "we fixed it", "verdict": "partly_met"},
+            {"criterion_id": "EVAL-09", "evidence": "taught me", "verdict": "met"},
+        ],
+        worked_well=[
+            {"criterion_id": "EVAL-01", "detail": "Generous praise."},
+            {"criterion_id": "EVAL-09", "detail": "You reflected."},
+        ],
+        what_to_improve=[],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert [s.criterion_id for s in result.strengths] == ["EVAL-09"]
+
+
+async def test_improvements_are_ordered_biggest_gap_first():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        assessments=[
+            {"criterion_id": "EVAL-01", "evidence": "none", "verdict": "not_met"},
+            {"criterion_id": "EVAL-02", "evidence": "x", "verdict": "met"},
+            {"criterion_id": "EVAL-09", "evidence": "x", "verdict": "partly_met"},
+        ],
+        worked_well=[],
+        what_to_improve=[
+            {"criterion_id": "EVAL-02", "detail": "Filler tip on a met criterion."},
+            {"criterion_id": "EVAL-09", "detail": "Polish."},
+            {"criterion_id": "EVAL-01", "detail": "Biggest gap."},
+        ],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert [i.criterion_id for i in result.improvements] == ["EVAL-01", "EVAL-09", "EVAL-02"]
+
+
+async def test_missing_assessments_keeps_model_lists_unchanged():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        what_to_improve=[
+            {"criterion_id": "EVAL-02", "detail": "a"},
+            {"criterion_id": "EVAL-09", "detail": "b"},
+        ],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert [s.criterion_id for s in result.strengths] == ["EVAL-01"]
+    assert [i.criterion_id for i in result.improvements] == ["EVAL-02", "EVAL-09"]
 
 
 async def test_off_topic_answer_drops_any_strengths_the_model_returns():
