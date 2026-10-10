@@ -11,12 +11,22 @@ There is no numeric score anywhere in this contract.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from app.repositories.interview import CriterionRow
 from app.services.llm import LlmError
 
 logger = logging.getLogger("rerouteher")
+
+# Hesitation sounds only (um, umm, uh, uhm, er, erm, hmm, mm). Words that can carry
+# meaning ("like", "so", "you know") and Malaysian English particles ("lah", "ah", "kan")
+# are deliberately not counted.
+_FILLER_RE = re.compile(r"\b(?:u+m+|u+h+m*|e+r+m*|h+m+|m{2,})\b", re.IGNORECASE)
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+# A few fillers are normal; only coach when they are frequent.
+_FILLER_MIN_COUNT = 3
+_FILLER_FREQUENT_PER_100_WORDS = 5.0
 
 
 class FeedbackError(Exception):
@@ -94,7 +104,17 @@ _SYSTEM_PROMPT = (
     "appropriate_concision. If no applicable criterion fits the advice, leave it out.\n"
     "- Follow each criterion's stated restriction exactly when you use it.\n"
     "- Never reward or penalise accent, fluency style, cultural familiarity, employer "
-    "prestige, or credential prestige.\n"
+    "prestige, or credential prestige. The only exception is the filler-word note "
+    "below.\n"
+    "- Filler words: the context gives a counted filler-word note. If it says "
+    "\"frequent\" and answers_question is true, add one short, practical delivery tip "
+    "inside the structure_and_clarity item in what_to_improve (if that criterion is "
+    "applicable), after any content advice for that criterion: suggest a short silent "
+    "pause instead of \"um\" or \"uh\" when she needs a moment to think, because a pause "
+    "sounds calm and gives her time. Do not quote the exact count. Never say or imply she "
+    "sounded nervous, unsure or lacking confidence, and never let fillers affect any "
+    "other criterion. Put content improvements (relevance, role connection, examples) "
+    "before this tip. If the note says \"not frequent\", do not mention fillers at all.\n"
     "- Never infer or mention protected characteristics (health, family status, age, "
     "religion, ethnicity) from the transcript.\n"
     "- If the answer touches on a career break or return-to-work readiness, judge clarity, "
@@ -142,6 +162,15 @@ def _question_design_context_block(data: FeedbackInput) -> str:
     )
 
 
+def _filler_note(transcript: str) -> str:
+    fillers = len(_FILLER_RE.findall(transcript))
+    words = len(_WORD_RE.findall(transcript))
+    per_100 = fillers * 100 / words if words else 0.0
+    frequent = fillers >= _FILLER_MIN_COUNT and per_100 >= _FILLER_FREQUENT_PER_100_WORDS
+    label = "frequent" if frequent else "not frequent"
+    return f"Filler words (um, uh, erm, hmm): {fillers} in {words} words ({label})"
+
+
 def _build_user_content(data: FeedbackInput) -> str:
     skills = ", ".join(data.skill_labels) if data.skill_labels else "none recorded"
     role = data.role_title or "general practice (no specific role selected)"
@@ -153,6 +182,7 @@ def _build_user_content(data: FeedbackInput) -> str:
         f"Applicable criteria (each line: id (name): what it checks | restriction):\n"
         f"{_criteria_block(data.criteria)}\n\n"
         f"{_question_design_context_block(data)}\n\n"
+        f"{_filler_note(data.transcript)}\n\n"
         f'Her transcript:\n"{data.transcript}"'
     )
 

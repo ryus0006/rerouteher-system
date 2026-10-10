@@ -250,6 +250,34 @@ async def test_criteria_definitions_and_matching_rule_reach_gemini():
     assert "pick the criterion whose definition it matches" in llm.calls[0]["system"]
 
 
+@pytest.mark.parametrize("transcript, expected", [
+    ("Um, so I, uh, led a team. Umm, we, erm, hit every deadline, hmm.",
+     "Filler words (um, uh, erm, hmm): 5 in 14 words (frequent)"),
+    ("I led a team of five, um, on a reporting project and we hit every deadline.",
+     "Filler words (um, uh, erm, hmm): 1 in 16 words (not frequent)"),
+    # meaningful words and Malaysian particles are not fillers
+    ("Like I said, so we finished early lah, you know, and the umbrella project ah.",
+     "Filler words (um, uh, erm, hmm): 0 in 15 words (not frequent)"),
+    ("", "Filler words (um, uh, erm, hmm): 0 in 0 words (not frequent)"),
+])
+async def test_filler_note_counts_hesitation_sounds_only(transcript, expected):
+    from app.services.interview_feedback import _filler_note
+
+    assert _filler_note(transcript) == expected
+
+
+async def test_filler_note_and_rule_reach_gemini():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call())])
+    await InterviewFeedbackService(llm).evaluate(
+        _input(transcript="Um, I, uh, led a team, erm, of five.")
+    )
+    user_text = llm.calls[0]["contents"][0]["parts"][0]["text"]
+    system = llm.calls[0]["system"]
+    assert "Filler words (um, uh, erm, hmm): 3 in 9 words (frequent)" in user_text
+    assert "silent pause" in system
+    assert "lacking confidence" in system
+
+
 async def test_off_topic_answer_drops_any_strengths_the_model_returns():
     llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
         answers_question=False,
