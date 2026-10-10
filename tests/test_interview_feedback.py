@@ -226,6 +226,30 @@ async def test_system_prompt_runs_relevance_check_before_praise():
     assert "answers_question" in params["required"]
 
 
+async def test_criteria_definitions_and_matching_rule_reach_gemini():
+    criteria = [
+        CriterionRow(
+            "EVAL-02", "role_connection", "connects_experience_to_role",
+            "make_role_connection_clearer", "Do not score prestige.",
+            "The response connects experience, skills, or motivation to the target role.",
+        ),
+        CriterionRow(
+            "EVAL-10", "appropriate_concision", "concise_with_enough_detail",
+            "make_the_answer_more_concise", "Do not impose a rigid speaking speed.",
+            "Enough detail to be credible without repetition or unrelated material.",
+        ),
+    ]
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        worked_well=[], what_to_improve=[{"criterion_id": "EVAL-02", "detail": "x"}],
+    ))])
+    await InterviewFeedbackService(llm).evaluate(_input(criteria=criteria))
+    user_text = llm.calls[0]["contents"][0]["parts"][0]["text"]
+    assert "connects experience, skills, or motivation to the target role" in user_text
+    assert "without repetition or unrelated material" in user_text
+    assert "Do not impose a rigid speaking speed." in user_text
+    assert "pick the criterion whose definition it matches" in llm.calls[0]["system"]
+
+
 async def test_off_topic_answer_drops_any_strengths_the_model_returns():
     llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
         answers_question=False,

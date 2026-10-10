@@ -87,6 +87,11 @@ _SYSTEM_PROMPT = (
     "present in the transcript.\n"
     "- Use only the listed applicable criteria; do not invent new criteria. There is no "
     "numeric score anywhere in this task.\n"
+    "- Each item's detail must be about what that criterion checks, as defined in its "
+    "line. Write the advice first, then pick the criterion whose definition it matches; "
+    "if it fits a different criterion better, use that one instead. For example, advice "
+    "about linking her experience to the target role belongs to role_connection, not "
+    "appropriate_concision. If no applicable criterion fits the advice, leave it out.\n"
     "- Follow each criterion's stated restriction exactly when you use it.\n"
     "- Never reward or penalise accent, fluency style, cultural familiarity, employer "
     "prestige, or credential prestige.\n"
@@ -116,7 +121,8 @@ _SYSTEM_PROMPT = (
 
 def _criteria_block(criteria: list[CriterionRow]) -> str:
     lines = [
-        f"- {c.criterion_id} ({c.criterion}): {c.prohibited_inference}"
+        f"- {c.criterion_id} ({c.criterion}): checks: {c.what_ai_checks or c.criterion} "
+        f"| restriction: {c.prohibited_inference}"
         for c in criteria
     ]
     return "\n".join(lines)
@@ -144,7 +150,7 @@ def _build_user_content(data: FeedbackInput) -> str:
         f"Question: {data.question_text}\n"
         f"Target role: {role}\n"
         f"Her saved skill labels: {skills}\n\n"
-        f"Applicable criteria (each line: id (name): restriction):\n"
+        f"Applicable criteria (each line: id (name): what it checks | restriction):\n"
         f"{_criteria_block(data.criteria)}\n\n"
         f"{_question_design_context_block(data)}\n\n"
         f'Her transcript:\n"{data.transcript}"'
