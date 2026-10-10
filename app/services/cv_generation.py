@@ -34,6 +34,9 @@ _BANNED_OUTPUT_TERMS = (
 
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d\s().-]{7,}\d)(?!\w)")
+# A four-digit to four-digit span is a year range (e.g. 2016-2024), not a phone number.
+# Experience start/end dates come through here, so leave them intact.
+_YEAR_RANGE_RE = re.compile(r"(?:19|20)\d{2}\s*[-–—]\s*(?:19|20)\d{2}")
 _NRIC_RE = re.compile(r"(?<!\w)\d{6}[-\s]?\d{2}[-\s]?\d{4}(?!\w)")
 _ADDRESS_RE = re.compile(
     r"(?im)^\s*(?:address|alamat|street|jalan|road|lorong|no\.)\s*[:#-]?.*$"
@@ -185,11 +188,20 @@ def _safe_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _redact_phone(match: re.Match) -> str:
+    # Leave plain year ranges (e.g. 2016-2024) alone - they anchor experience dates,
+    # and a real phone number carries more digits than a four-plus-four year span.
+    span = match.group(0)
+    if _YEAR_RANGE_RE.fullmatch(span.strip()):
+        return span
+    return "[redacted phone]" if len(re.sub(r"\D", "", span)) >= 9 else span
+
+
 def _redact_text(value: Any) -> str:
     """Keep useful experience wording while excluding common direct identifiers."""
     text = _safe_text(value)
     text = _EMAIL_RE.sub("[redacted email]", text)
-    text = _PHONE_RE.sub("[redacted phone]", text)
+    text = _PHONE_RE.sub(_redact_phone, text)
     text = _NRIC_RE.sub("[redacted identifier]", text)
     return _ADDRESS_RE.sub("[redacted address]", text)
 

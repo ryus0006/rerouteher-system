@@ -7,6 +7,8 @@ Snapshot generation is a later story; this only builds the profile.
 """
 import logging
 
+from pydantic import ValidationError
+
 from app.repositories import companion as companion_repo
 from app.repositories import interview as interview_repo
 from app.repositories import roles as roles_repo
@@ -27,36 +29,63 @@ SYSTEM_PROMPT = (
     "You are ReRouteHer's re-entry companion, Hera, for Malaysian mothers returning to "
     "work. Be warm, concrete and brief; write in short plain sentences and split a long "
     "answer into two short messages rather than one long block.\n\n"
-    "If she has no results yet, help her build a career profile by chatting: her most "
-    "recent occupation, her skills, and her career break (how long and what she did - "
-    "caregiving counts as real experience, never a blank gap). Ask one clear follow-up "
-    "when something important is missing; do not guess. While she is still building, if "
-    "her CV's most recent experience looks years out of date, note it once and invite her "
-    "to add anything recent such as courses, volunteering, freelance or caregiving; once "
-    "her profile is complete do not raise it again. If she mentions what she "
-    "most wants from an employer (flexible or remote work, childcare support, parental "
-    "support, a return-to-work programme, or an inclusive workplace), capture up to three "
-    "as employerPriorities. Map what she did during her break to the closest of our fixed "
-    "activity ids (childcare, running the household, caring for elderly or sick family, "
-    "day-to-day coordination, managing schedules, event planning, paperwork and records, "
-    "budgeting, home repairs and contractors, negotiation, teaching or tutoring, "
-    "volunteering) and pass them as break.activities, so her break is recognised as real "
-    "experience, never a blank gap. When you have enough, call the update_profile tool with "
-    "a cv object (raw_text, experiences, skill_mentions), a break object (duration_years, "
-    "activities) and employerPriorities if she gave any, then tell her you have drafted "
-    "her profile and invite her to review and confirm it or ask for a change. Once you know "
-    "her most recent occupation, call offer_role_skills with it so she can tick the skills "
-    "she already has from that role. After she has given her most recent occupation and "
-    "ticked her role skills, collect her work history: ask for the details of her most "
-    "recent workplace - the employer, the rough date range (start and end as month and "
-    "year), and what she did there - and record it as an entry in cv.experiences with "
-    "title, organisation, start, end and description. Then ask whether she had an earlier "
-    "role she would like to add, and keep adding each one she gives as another experiences "
-    "entry until she says there are no more. Use only what she tells you; if she does not "
-    "remember exact dates, record the approximate dates she gives rather than inventing "
-    "them. Only describe actions you have actually taken this turn "
-    "- do not say you have shown her a checklist or saved anything unless you called the "
-    "matching tool.\n\n"
+    "If she has no results yet, your job is to fill in her career profile by chatting, one "
+    "part at a time, IN THIS ORDER. The profile has four parts (her work history, the skills "
+    "for each role, her career break, and her employer priorities), and all four must be "
+    "filled before it is ready. Do not skip ahead to a later part while an earlier one is "
+    "still missing:\n"
+    "1. Work history and its skills - FIRST, and collected together as ONE group, one role at "
+    "a time. A role needs a job title, the employer, the start month and year and the end "
+    "month and year (or that she is still in it), and a short note on what she did. Dates on "
+    "a CV are month and year only - record start and end as month and year (for example "
+    "'May 2016'), never a full calendar date with a day, and never invent a day. If she "
+    "gives only a year, record just that year.\n"
+    "   DATES GATE (do this before anything else for each role): you MUST get her explicit "
+    "start and end from her own words. A length of time such as 'about 8 years', '8 years', "
+    "or 'a few years' is NOT a start and end - it is just a duration. Never convert a "
+    "duration into years or dates yourself, and never back-calculate from today. Until she "
+    "has told you the actual start (month and year, or at least the year) and the actual end "
+    "(or that she is still in it), you MUST NOT call update_profile for that role and you "
+    "MUST NOT call offer_role_skills for it; instead ask her, in one warm question, which "
+    "month and year it started and which month and year it ended. Only treat the dates as "
+    "known when she has stated them.\n"
+    "   Start by asking for her most recent role. Once you have the title, the employer AND "
+    "her stated start and end, handle the rest as a pair in the SAME turn: first call "
+    "update_profile to save the role, then immediately call offer_role_skills with that "
+    "role's occupation so she can tick the common skills for it, and capture any skill she "
+    "names herself in cv.skill_mentions. Only after the skills for that role are settled do "
+    "you ask whether she had an earlier role. If she did, repeat the exact same steps for it "
+    "- get its start and end from her, save the role, then offer its skills - and keep "
+    "looping until she says there are no more. Do not ask about earlier roles before you "
+    "have offered the skills for the current one, and do not move on to the career break "
+    "until every role and its skills are done.\n"
+    "2. Career break - SECOND. Roughly how long it lasted and what filled it. Map each "
+    "activity to the closest of our fixed ids (childcare, running the household, caring for "
+    "elderly or sick family, day-to-day coordination, managing schedules, event planning, "
+    "paperwork and records, budgeting, home repairs and contractors, negotiation, teaching "
+    "or tutoring, volunteering) and pass them as break.activities, so her break counts as "
+    "real experience, never a blank gap.\n"
+    "3. Employer priorities - LAST. Up to three things she most wants from an employer, from "
+    "flexible or remote work, childcare support, parental support, a return-to-work "
+    "programme, or an inclusive workplace, recorded as employerPriorities.\n"
+    "The 'Current profile' note below is the single source of truth for what is actually "
+    "saved; trust it over your memory of the chat. Look at which parts are still missing and "
+    "ask one clear, warm follow-up for the FIRST still-missing part in the order above, one "
+    "part at a time; do not interrogate her. Never guess or invent details, and never turn a "
+    "duration like 'about 8 years' into specific start and end dates on your own - ask her "
+    "for the actual start and end year. If she does not remember exact dates, record the "
+    "approximate years she gives you.\n"
+    "Every time she gives or changes any detail, your very next action that turn MUST be to "
+    "call update_profile with the COMPLETE profile so far - the full cv.experiences list "
+    "(every role she has given, not only the latest), raw_text, skill_mentions, the break "
+    "and employerPriorities. Saying something in words does NOT save it: never tell her a "
+    "role, a break or any detail is recorded, noted or saved unless you called "
+    "update_profile with it in this same turn.\n"
+    "Keep going until all four parts are filled, then tell her the profile is ready and "
+    "invite her to review and confirm it. If at any point she asks to stop or to use what "
+    "she has, stop asking and invite her to review and confirm what is there. Only describe "
+    "actions you have actually taken this turn - do not say you have shown her a checklist "
+    "or saved anything unless you called the matching tool.\n\n"
     "When she describes a professional skill she may have learned, use "
     "search_profile_skills to find up to three matching skills from the taxonomy. Show the "
     "candidate names and ask her to confirm the exact skill before calling add_profile_skill. "
@@ -415,6 +444,66 @@ class CompanionService:
             return None
         return role.role_id, choices
 
+    def _draft_note(self, req: AskRequest) -> str:
+        # Build mode only: give the model the true committed form state so it fills the
+        # missing parts and re-commits via update_profile instead of narrating. Once she
+        # has a saved CV or snapshot she is past building, so _journey_note takes over.
+        if req.journey.snapshot or req.journey.cv is not None:
+            return ""
+        draft = req.draft
+        experiences = list(draft.cv.experiences) if (draft and draft.cv) else []
+        break_ = draft.break_ if draft else None
+        priorities = list(draft.employerPriorities) if draft else []
+        confirmed = [s.skill_name for s in req.journey.confirmedSkills if s.skill_name]
+        mentions = list(draft.cv.skill_mentions) if (draft and draft.cv) else []
+        skills = confirmed + [m for m in mentions if m not in confirmed]
+
+        parts: list[str] = []
+        if experiences:
+            shown = []
+            for e in experiences:
+                span = " to ".join(x for x in [e.start, e.end] if x)
+                label = e.title or "role"
+                if e.organisation:
+                    label += f" at {e.organisation}"
+                if span:
+                    label += f" ({span})"
+                shown.append(label)
+            line = "FILLED work history: " + "; ".join(shown)
+            if any(not (e.title and e.organisation and e.start and e.end) for e in experiences):
+                line += " (a role is still missing its employer or dates - ask for the gap)"
+            parts.append(line)
+        else:
+            parts.append(
+                "MISSING work history: ask for her most recent role - job title, employer, "
+                "rough start and end - and save it with update_profile."
+            )
+
+        if skills:
+            parts.append("FILLED skills: " + ", ".join(skills[:12]))
+        else:
+            parts.append(
+                "MISSING skills: once you have her work history, call offer_role_skills so she "
+                "can tick her role skills."
+            )
+
+        if break_ is not None and (break_.duration_years or break_.activities):
+            bits = []
+            if break_.duration_years:
+                bits.append(f"about {break_.duration_years} years")
+            if break_.activities:
+                bits.append(", ".join(break_.activities))
+            parts.append("FILLED career break: " + "; ".join(bits))
+        else:
+            parts.append("MISSING career break: ask roughly how long it lasted and what filled it.")
+
+        if priorities:
+            parts.append("FILLED employer priorities: " + ", ".join(priorities))
+        else:
+            parts.append("MISSING employer priorities: ask what matters most to her in her next role.")
+
+        return "Current profile - " + " | ".join(parts)
+
     def _journey_note(self, req: AskRequest) -> str:
         j = req.journey
         bits = []
@@ -546,7 +635,12 @@ class CompanionService:
         contents.append({"role": "user", "parts": [{"text": req.question}]})
 
         system = SYSTEM_PROMPT
-        notes = [self._journey_note(req), self._results_note(req), self._employer_note(req)]
+        notes = [
+            self._draft_note(req),
+            self._journey_note(req),
+            self._results_note(req),
+            self._employer_note(req),
+        ]
         if req.interview is not None:
             notes.append(await self._interview_note(req, session))
         extras = " ".join(p for p in notes if p)
@@ -588,23 +682,47 @@ class CompanionService:
                     args = call.get("args") or {}
                     status = {"status": "ok"}
                     if name == "update_profile":
-                        journey_update = JourneyUpdate.model_validate(args)
-                        # Defend the fixed pick-list even though the tool enum constrains it:
-                        # drop anything unknown, keep order, cap at three.
-                        journey_update.employerPriorities = [
-                            p for p in journey_update.employerPriorities if p in _VALID_PRIORITY_IDS
-                        ][:_MAX_PRIORITIES]
-                        # Defend the fixed activity taxonomy: keep only ids the CareerBreak page
-                        # and caregiving_map recognise (so both can render/reframe them).
-                        if journey_update.break_ is not None:
-                            journey_update.break_.activities = [
-                                a
-                                for a in journey_update.break_.activities
-                                if a in _VALID_ACTIVITY_IDS
-                            ]
-                        if req.journey.cv is not None:
-                            sources.append("Your CV")
-                        status = {"status": "saved"}
+                        # The model must echo the COMPLETE profile each turn, but it
+                        # sometimes omits cv.raw_text when it is only adding or editing an
+                        # experience (for example adding an earlier role after the CV has
+                        # already been generated). raw_text is required on the CV schema, so
+                        # backfill it from the journey/draft already in the request instead
+                        # of letting a ValidationError bubble up as a 500 - which would also
+                        # strip the CORS headers and read as "failed to fetch" in the browser.
+                        cv_args = args.get("cv")
+                        if isinstance(cv_args, dict) and not cv_args.get("raw_text"):
+                            fallback_raw = ""
+                            if req.journey.cv is not None:
+                                fallback_raw = req.journey.cv.raw_text or ""
+                            if not fallback_raw and req.draft is not None and req.draft.cv is not None:
+                                fallback_raw = req.draft.cv.raw_text or ""
+                            cv_args["raw_text"] = fallback_raw
+                        try:
+                            journey_update = JourneyUpdate.model_validate(args)
+                        except ValidationError as exc:
+                            # Degrade gracefully: skip this bad tool call rather than 500.
+                            logger.warning("companion update_profile args invalid: %s", exc)
+                            journey_update = None
+                            status = {"status": "error"}
+                        else:
+                            # Defend the fixed pick-list even though the tool enum constrains it:
+                            # drop anything unknown, keep order, cap at three.
+                            journey_update.employerPriorities = [
+                                p
+                                for p in journey_update.employerPriorities
+                                if p in _VALID_PRIORITY_IDS
+                            ][:_MAX_PRIORITIES]
+                            # Defend the fixed activity taxonomy: keep only ids the CareerBreak
+                            # page and caregiving_map recognise (so both can render/reframe them).
+                            if journey_update.break_ is not None:
+                                journey_update.break_.activities = [
+                                    a
+                                    for a in journey_update.break_.activities
+                                    if a in _VALID_ACTIVITY_IDS
+                                ]
+                            if req.journey.cv is not None:
+                                sources.append("Your CV")
+                            status = {"status": "saved"}
                     elif name == "point_to_step":
                         mapped = _STEP_CTAS.get(args.get("step"))
                         if mapped:

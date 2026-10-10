@@ -71,11 +71,17 @@ class GeminiClient:
                 async with httpx.AsyncClient(timeout=self._timeout_s) as client:
                     resp = await client.post(url, json=body, headers={"x-goog-api-key": key})
             except Exception as exc:  # noqa: BLE001
-                last_error = str(exc)
+                # Many httpx errors (e.g. ConnectTimeout/ReadTimeout) stringify to
+                # an empty message, so include the exception type and the target
+                # URL/timeout to make the real cause visible in the logs.
+                last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning(
-                    "gemini key #%d call failed (%s); trying the next key",
+                    "gemini key #%d call failed (%s) url=%s timeout=%ss; trying the next key",
                     self._index + 1,
-                    exc,
+                    last_error,
+                    url,
+                    self._timeout_s,
+                    exc_info=True,
                 )
                 self._index = (self._index + 1) % len(self._api_keys)
                 continue

@@ -1,7 +1,7 @@
 """Schemas for POST /api/companion/ask (E8)."""
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.cv import CV
+from app.schemas.cv import CV, Experience
 from app.schemas.snapshot import Break
 
 
@@ -60,10 +60,29 @@ class InterviewContextIn(BaseModel):
     improvements: list[InterviewFeedbackItemIn] = []
 
 
+class DraftCv(BaseModel):
+    # Lenient mirror of CV for the in-progress draft: raw_text may be absent while
+    # the profile is still being filled, so it must not be required here.
+    raw_text: str = ""
+    experiences: list[Experience] = []
+    skill_mentions: list[str] = []
+
+
+class DraftIn(BaseModel):
+    # The profile the companion has drafted but not yet saved, echoed back each turn
+    # so the model sees the true form state (what update_profile has actually
+    # produced), not just its memory of the chat.
+    model_config = ConfigDict(populate_by_name=True)
+    cv: DraftCv | None = None
+    break_: Break | None = Field(default=None, alias="break")
+    employerPriorities: list[str] = []
+
+
 class AskRequest(BaseModel):
     question: str
     session_id: str
     journey: JourneyIn = JourneyIn()
+    draft: DraftIn | None = None
     current_page: str | None = None
     interview: InterviewContextIn | None = None
 

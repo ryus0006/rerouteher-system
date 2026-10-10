@@ -718,3 +718,76 @@ async def test_profile_skill_mutation_is_not_run_for_guest():
     assert resp.profile_skill_update is None
     response = llm.calls[1]["contents"][-1]["parts"][0]["functionResponse"]["response"]
     assert response["status"] == "authentication_required"
+
+
+# --- _draft_note: the form-state the model sees while building (US8.1) --------
+
+def _svc():
+    return CompanionService(llm=ScriptedLlm([]), repo=FakeRepo())
+
+
+async def test_draft_note_reports_all_parts_missing_when_empty():
+    note = _svc()._draft_note(AskRequest(question="hi", session_id="s1"))
+    assert "MISSING work history" in note
+    assert "MISSING career break" in note
+    assert "MISSING skills" in note
+    assert "MISSING employer priorities" in note
+
+
+async def test_draft_note_reports_filled_parts_from_draft():
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        draft={
+            "cv": {
+                "experiences": [
+                    {
+                        "title": "Staff Nurse",
+                        "organisation": "Columbia Asia",
+                        "start": "2011",
+                        "end": "2019",
+                        "description": "ward care",
+                    }
+                ],
+            },
+            "break": {"duration_years": 6, "activities": ["childcare"]},
+            "employerPriorities": ["flexible_work"],
+        },
+        journey={"confirmedSkills": [{"skill_id": "s1", "skill_name": "Active Listening"}]},
+    )
+    note = _svc()._draft_note(req)
+    assert "FILLED work history: Staff Nurse at Columbia Asia (2011 to 2019)" in note
+    assert "FILLED career break" in note and "about 6" in note
+    assert "FILLED skills: Active Listening" in note
+    assert "FILLED employer priorities: flexible_work" in note
+    assert "MISSING" not in note
+
+
+async def test_draft_note_flags_role_missing_employer_or_dates():
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        draft={"cv": {"experiences": [{"title": "Nurse"}]}},
+    )
+    note = _svc()._draft_note(req)
+    assert "FILLED work history" in note
+    assert "missing its employer or dates" in note
+
+
+async def test_draft_note_silent_once_she_has_a_saved_cv():
+    # A saved CV means she is past building, so the note steps aside for _journey_note.
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        journey={"cv": {"raw_text": "x", "experiences": []}},
+    )
+    assert _svc()._draft_note(req) == ""
+
+
+async def test_draft_note_silent_once_she_has_a_snapshot():
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        journey={"snapshot": {"professional_skills": []}},
+    )
+    assert _svc()._draft_note(req) == ""

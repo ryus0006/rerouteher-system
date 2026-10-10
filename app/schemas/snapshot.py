@@ -7,7 +7,7 @@ from app.schemas.cv import CV
 
 
 class Break(BaseModel):
-    duration_years: float
+    duration_years: float | None = None
     activities: list[str] = []
 
 
