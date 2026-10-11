@@ -42,6 +42,7 @@ class CriterionRow:
     positive_feedback_tag: str
     improvement_feedback_tag: str
     prohibited_inference: str
+    what_ai_checks: str = ""
 
 
 @dataclass
@@ -204,7 +205,8 @@ async def get_criteria_for_questions(
         await session.execute(
             text(
                 "SELECT qr.question_id, r.criterion_id, r.criterion, "
-                "r.positive_feedback_tag, r.improvement_feedback_tag, r.prohibited_inference "
+                "r.positive_feedback_tag, r.improvement_feedback_tag, r.prohibited_inference, "
+                "r.what_ai_checks "
                 "FROM interview_question_rubric qr "
                 "JOIN ai_evaluation_rubric r ON r.criterion_id = qr.criterion_id "
                 "WHERE qr.question_id = ANY(:ids)"
@@ -217,7 +219,7 @@ async def get_criteria_for_questions(
         out.setdefault(r.question_id, []).append(
             CriterionRow(
                 r.criterion_id, r.criterion, r.positive_feedback_tag,
-                r.improvement_feedback_tag, r.prohibited_inference,
+                r.improvement_feedback_tag, r.prohibited_inference, r.what_ai_checks,
             )
         )
     return out

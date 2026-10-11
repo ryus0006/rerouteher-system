@@ -226,6 +226,119 @@ async def test_system_prompt_runs_relevance_check_before_praise():
     assert "answers_question" in params["required"]
 
 
+async def test_criteria_definitions_and_matching_rule_reach_gemini():
+    criteria = [
+        CriterionRow(
+            "EVAL-02", "role_connection", "connects_experience_to_role",
+            "make_role_connection_clearer", "Do not score prestige.",
+            "The response connects experience, skills, or motivation to the target role.",
+        ),
+        CriterionRow(
+            "EVAL-10", "appropriate_concision", "concise_with_enough_detail",
+            "make_the_answer_more_concise", "Do not impose a rigid speaking speed.",
+            "Enough detail to be credible without repetition or unrelated material.",
+        ),
+    ]
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        worked_well=[], what_to_improve=[{"criterion_id": "EVAL-02", "detail": "x"}],
+    ))])
+    await InterviewFeedbackService(llm).evaluate(_input(criteria=criteria))
+    user_text = llm.calls[0]["contents"][0]["parts"][0]["text"]
+    assert "connects experience, skills, or motivation to the target role" in user_text
+    assert "without repetition or unrelated material" in user_text
+    assert "Do not impose a rigid speaking speed." in user_text
+    assert "pick the criterion whose definition it matches" in llm.calls[0]["system"]
+
+
+@pytest.mark.parametrize("transcript, expected", [
+    ("Um, so I, uh, led a team. Umm, we, erm, hit every deadline, hmm.",
+     "Filler words (um, uh, erm, hmm): 5 in 14 words (frequent)"),
+    ("I led a team of five, um, on a reporting project and we hit every deadline.",
+     "Filler words (um, uh, erm, hmm): 1 in 16 words (not frequent)"),
+    # meaningful words and Malaysian particles are not fillers
+    ("Like I said, so we finished early lah, you know, and the umbrella project ah.",
+     "Filler words (um, uh, erm, hmm): 0 in 15 words (not frequent)"),
+    ("", "Filler words (um, uh, erm, hmm): 0 in 0 words (not frequent)"),
+])
+async def test_filler_note_counts_hesitation_sounds_only(transcript, expected):
+    from app.services.interview_feedback import _filler_note
+
+    assert _filler_note(transcript) == expected
+
+
+async def test_filler_note_and_rule_reach_gemini():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call())])
+    await InterviewFeedbackService(llm).evaluate(
+        _input(transcript="Um, I, uh, led a team, erm, of five.")
+    )
+    user_text = llm.calls[0]["contents"][0]["parts"][0]["text"]
+    system = llm.calls[0]["system"]
+    assert "Filler words (um, uh, erm, hmm): 3 in 9 words (frequent)" in user_text
+    assert "silent pause" in system
+    assert "lacking confidence" in system
+    assert "assess structure_and_clarity as at most partly_met" in system
+
+
+async def test_prompt_requires_checklist_watch_outs_and_impact_order():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call())])
+    await InterviewFeedbackService(llm).evaluate(_input())
+    system = llm.calls[0]["system"]
+    assert "For EVERY applicable criterion" in system
+    assert "Things to watch out for" in system
+    assert "The FIRST item must be the single change that would most improve" in system
+    assert "keep the most impactful three, giving watch-out issues priority" in system
+    params = llm.calls[0]["tools"][0]["function_declarations"][0]["parameters"]
+    assert "assessments" in params["required"]
+    verdict = params["properties"]["assessments"]["items"]["properties"]["verdict"]
+    assert verdict["enum"] == ["not_met", "partly_met", "met"]
+
+
+async def test_strength_not_assessed_as_met_is_dropped():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        assessments=[
+            {"criterion_id": "EVAL-01", "evidence": "we fixed it", "verdict": "partly_met"},
+            {"criterion_id": "EVAL-09", "evidence": "taught me", "verdict": "met"},
+        ],
+        worked_well=[
+            {"criterion_id": "EVAL-01", "detail": "Generous praise."},
+            {"criterion_id": "EVAL-09", "detail": "You reflected."},
+        ],
+        what_to_improve=[],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert [s.criterion_id for s in result.strengths] == ["EVAL-09"]
+
+
+async def test_improvements_are_ordered_biggest_gap_first():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        assessments=[
+            {"criterion_id": "EVAL-01", "evidence": "none", "verdict": "not_met"},
+            {"criterion_id": "EVAL-02", "evidence": "x", "verdict": "met"},
+            {"criterion_id": "EVAL-09", "evidence": "x", "verdict": "partly_met"},
+        ],
+        worked_well=[],
+        what_to_improve=[
+            {"criterion_id": "EVAL-02", "detail": "Filler tip on a met criterion."},
+            {"criterion_id": "EVAL-09", "detail": "Polish."},
+            {"criterion_id": "EVAL-01", "detail": "Biggest gap."},
+        ],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert [i.criterion_id for i in result.improvements] == ["EVAL-01", "EVAL-09", "EVAL-02"]
+
+
+async def test_missing_assessments_keeps_model_lists_unchanged():
+    llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
+        what_to_improve=[
+            {"criterion_id": "EVAL-02", "detail": "a"},
+            {"criterion_id": "EVAL-09", "detail": "b"},
+        ],
+    ))])
+    result = await InterviewFeedbackService(llm).evaluate(_input())
+    assert [s.criterion_id for s in result.strengths] == ["EVAL-01"]
+    assert [i.criterion_id for i in result.improvements] == ["EVAL-02", "EVAL-09"]
+
+
 async def test_off_topic_answer_drops_any_strengths_the_model_returns():
     llm = ScriptedLlm([_fn("submit_interview_feedback", _valid_call(
         answers_question=False,

@@ -64,6 +64,7 @@ def _criterion_row(**over):
         positive_feedback_tag="answers_the_question",
         improvement_feedback_tag="focus_on_the_question",
         prohibited_inference="Do not use accent as a proxy for relevance.",
+        what_ai_checks="The response answers the question that was asked.",
     )
     base.update(over)
     return FakeRow(**base)
@@ -142,6 +143,7 @@ async def test_get_criteria_for_questions_groups_by_question_id():
     out = await repo.get_criteria_for_questions(session, ["GEN-001", "GEN-002"])
     assert {c.criterion_id for c in out["GEN-001"]} == {"EVAL-01", "EVAL-05"}
     assert len(out["GEN-002"]) == 1
+    assert out["GEN-002"][0].what_ai_checks == "The response answers the question that was asked."
 
 
 async def test_get_criteria_for_questions_empty_returns_empty():
