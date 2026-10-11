@@ -26,7 +26,7 @@ _FILLER_RE = re.compile(r"\b(?:u+m+|u+h+m*|e+r+m*|h+m+|m{2,})\b", re.IGNORECASE)
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 # A few fillers are normal; only coach when they are frequent.
 _FILLER_MIN_COUNT = 3
-_FILLER_FREQUENT_PER_100_WORDS = 5.0
+_FILLER_FREQUENT_PER_100_WORDS = 3.0
 
 # Checklist verdicts, biggest gap first; also the sort order for what_to_improve.
 _VERDICTS = ("not_met", "partly_met", "met")
