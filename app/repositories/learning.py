@@ -74,7 +74,7 @@ async def get_curated_resources(
                 "JOIN learning_resource lr ON lr.resource_id = lrs.resource_id "
                 "JOIN provider p ON p.provider_id = lr.provider_id "
                 "WHERE lrs.skill_id = ANY(:ids) "
-                "ORDER BY lrs.skill_id, lrs.relevance DESC NULLS LAST"
+                "ORDER BY lrs.skill_id, lrs.relevance DESC NULLS LAST, lr.resource_id"
             ),
             {"ids": skill_ids},
         )

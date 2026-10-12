@@ -2,8 +2,9 @@
 service. `generate` returns the first candidate's content plus the call's token
 usage, so callers can render tool calls and record cost.
 
-Supports key rotation: when the active key is rate-limited (HTTP 429), it falls
-back to the next configured key and remembers it for later requests."""
+Supports key rotation: when a call on the active key fails (network error, rate
+limit, or any other HTTP error), it falls back to the next configured key and
+remembers the key that worked for later requests."""
 from __future__ import annotations
 
 import logging
@@ -59,26 +60,43 @@ class GeminiClient:
         if tools:
             body["tools"] = tools
 
-        # Try the active key, then each remaining key on a 429. Non-429 failures
-        # are not a quota problem, so they surface immediately.
+        # Try the active key, then each remaining key on any failure: a network
+        # error, a rate limit (429), or any other HTTP error (a revoked key gives
+        # 403, a transient Gemini fault gives 5xx). The last error is surfaced
+        # only once every key has been tried.
+        last_error = "gemini call failed"
         for _ in range(len(self._api_keys)):
             key = self._api_keys[self._index]
             try:
                 async with httpx.AsyncClient(timeout=self._timeout_s) as client:
                     resp = await client.post(url, json=body, headers={"x-goog-api-key": key})
             except Exception as exc:  # noqa: BLE001
-                raise LlmError(str(exc)) from exc
-
-            if resp.status_code == 429:
+                # Many httpx errors (e.g. ConnectTimeout/ReadTimeout) stringify to
+                # an empty message, so include the exception type and the target
+                # URL/timeout to make the real cause visible in the logs.
+                last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning(
-                    "gemini key #%d rate-limited (429); rotating to the next key",
+                    "gemini key #%d call failed (%s) url=%s timeout=%ss; trying the next key",
                     self._index + 1,
+                    last_error,
+                    url,
+                    self._timeout_s,
+                    exc_info=True,
+                )
+                self._index = (self._index + 1) % len(self._api_keys)
+                continue
+
+            if resp.status_code >= 400:
+                last_error = f"http {resp.status_code}"
+                logger.warning(
+                    "gemini key #%d returned %d; trying the next key",
+                    self._index + 1,
+                    resp.status_code,
                 )
                 self._index = (self._index + 1) % len(self._api_keys)
                 continue
 
             try:
-                resp.raise_for_status()
                 data = resp.json()
             except Exception as exc:  # noqa: BLE001
                 raise LlmError(str(exc)) from exc
@@ -100,4 +118,4 @@ class GeminiClient:
                 tokens_out=max(tokens_out, 0),
             )
 
-        raise LlmError("all Gemini keys are rate-limited")
+        raise LlmError(f"all Gemini keys failed: {last_error}")

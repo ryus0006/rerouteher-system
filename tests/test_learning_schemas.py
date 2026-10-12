@@ -23,7 +23,7 @@ def test_response_round_trips_groups_and_resources():
                 provider="YouTube",
                 logo="youtube",
                 format="Video",
-                minutes=None,
+                minutes=0,
                 cost="Free",
                 free=True,
                 url="https://www.youtube.com/results?search_query=x",
@@ -33,5 +33,5 @@ def test_response_round_trips_groups_and_resources():
     )
     dumped = resp.model_dump()
     assert dumped["groups"][0]["icon"] is None
-    assert dumped["resources"][0]["minutes"] is None
+    assert dumped["resources"][0]["minutes"] == 0
     assert dumped["resources"][0]["free"] is True

@@ -112,7 +112,54 @@ async def test_generate_rotates_to_next_key_on_429(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_raises_when_all_keys_rate_limited(monkeypatch):
+async def test_generate_rotates_to_next_key_on_other_http_error(monkeypatch):
+    # A non-429 failure (e.g. 500, or a revoked key returning 403) should also
+    # fall through to the next key rather than surfacing immediately.
+    calls = []
+    import app.services.llm as llm_mod
+
+    status = lambda k: 500 if k == "k1" else 200  # noqa: E731
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_factory(status, calls))
+    client = GeminiClient(api_keys=["k1", "k2"], model="m", base_url="https://x/v1beta", timeout_s=5)
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.content["parts"][0]["text"] == "ok:k2"
+    assert calls == ["k1", "k2"]
+
+
+@pytest.mark.asyncio
+async def test_generate_rotates_to_next_key_on_network_error(monkeypatch):
+    # A transport-level failure on one key should try the next key, not abort.
+    calls = []
+    import app.services.llm as llm_mod
+
+    class FlakyThenOk:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            key = headers["x-goog-api-key"]
+            calls.append(key)
+            if key == "k1":
+                raise RuntimeError("connection reset")
+            return _Resp(200, key)
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", FlakyThenOk)
+    client = GeminiClient(api_keys=["k1", "k2"], model="m", base_url="https://x/v1beta", timeout_s=5)
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.content["parts"][0]["text"] == "ok:k2"
+    assert calls == ["k1", "k2"]
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_when_all_keys_fail(monkeypatch):
     calls = []
     import app.services.llm as llm_mod
 

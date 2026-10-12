@@ -1,4 +1,6 @@
 from app.schemas.employers import (
+    JobOpeningOut,
+    JobSearchOut,
     EmployerMatchOut,
     EmployerMatchRequest,
     EmployerMatchResponse,
@@ -8,9 +10,28 @@ from app.schemas.employers import (
 
 
 def test_request_defaults():
-    req = EmployerMatchRequest(priorities=["flexible_work"])
+    req = EmployerMatchRequest(
+        priorities=["flexible_work"], target_role_id="role_dev"
+    )
     assert req.priorities == ["flexible_work"]
-    assert req.target_role_id is None
+    assert req.target_role_id == "role_dev"
+
+
+def test_request_rejects_invalid_priority_sets():
+    import pytest
+    from pydantic import ValidationError
+
+    for priorities in ([], ["flexible_work"] * 2, ["unknown"], ["flexible_work"] * 6):
+        with pytest.raises(ValidationError):
+            EmployerMatchRequest(target_role_id="role_dev", priorities=priorities)
+
+
+def test_request_requires_non_empty_target_role():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        EmployerMatchRequest(target_role_id="", priorities=["flexible_work"])
 
 
 def test_employer_out_allows_missing_report_and_logo():
@@ -29,6 +50,9 @@ def test_employer_out_allows_missing_report_and_logo():
 
 def test_response_round_trips():
     resp = EmployerMatchResponse(
+        job_search=JobSearchOut(
+            status="ready", searched_at="2026-10-04T00:00:00Z"
+        ),
         employers=[
             EmployerMatchOut(
                 id="nestle",
@@ -42,9 +66,16 @@ def test_response_round_trips():
                 report=ReportOut(label="Sustainability Report 2024", url="https://x"),
                 met=["flexible_work"],
                 unmet=["inclusive_workplace"],
+                job=JobOpeningOut(
+                    title="HR Manager",
+                    url="https://jobs.example.test/hr",
+                    found_at="2026-10-04T00:00:00Z",
+                ),
             )
         ]
     )
     d = resp.model_dump()
     assert d["employers"][0]["logo"]["text"] == "Nestle"
     assert d["employers"][0]["report"]["url"] == "https://x"
+    assert d["job_search"]["status"] == "ready"
+    assert d["employers"][0]["job"]["title"] == "HR Manager"

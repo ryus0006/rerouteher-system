@@ -46,6 +46,12 @@ _OCCUPATION_OVERRIDE_MARGIN = 0.25
 def _phrase_set(text_lower: str, max_n: int = _MAX_PHRASE_WORDS) -> set[str]:
     """Word/phrase tokens (1..max_n grams) so short skill terms match on word
     boundaries, not as substrings inside larger words."""
+    # Drop PII redaction placeholders ([email], [phone], [name], [address]) so their
+    # inner words (e.g. "email") are not matched as skills (e.g. Electronic Communication).
+    text_lower = re.sub(r"\[[a-z]+\]", " ", text_lower)
+    # Drop masked tokens (e.g. "r****", "k*****") so a leftover initial from the masked
+    # header is not read as a skill (e.g. a stray "r" matching the R language).
+    text_lower = re.sub(r"\S*\*\S*", " ", text_lower)
     words = _WORD_RE.findall(text_lower)
     phrases: set[str] = set()
     for n in range(1, max_n + 1):
@@ -63,6 +69,7 @@ class SnapshotService:
         # lazily loaded skill lookup (cached on this singleton instance)
         self._term_to_skill: dict[str, str] | None = None
         self._skill_to_canonical: dict[str, str] = {}
+        self._skill_to_definition: dict[str, str | None] = {}
 
     async def generate(self, req: SnapshotRequest, session: AsyncSession) -> SnapshotResponse:
         await self._ensure_skill_lookup(session)
@@ -89,6 +96,7 @@ class SnapshotService:
             return
         for row in await skills_repo.list_skills(session):
             self._skill_to_canonical[row.skill_id] = row.canonical_name
+            self._skill_to_definition[row.skill_id] = row.definition
         term_to_skill: dict[str, str] = {}
         for skill_id, term in await skills_repo.load_alias_dictionary(session):
             key = term.strip().lower()
@@ -107,6 +115,10 @@ class SnapshotService:
         # 1. exact alias pass over the CV text (PhraseMatcher-equivalent, word-boundary safe)
         phrases = _phrase_set(cv.raw_text.lower())
         for term, skill_id in self._term_to_skill.items():
+            # Single-character aliases (e.g. "r", "c") match stray letters and are almost
+            # always noise; require them to come from a vetted skill mention (pass 2) instead.
+            if len(term) < 2:
+                continue
             if term in phrases:
                 found.setdefault(skill_id, self._professional(skill_id, term))
 
@@ -126,6 +138,7 @@ class SnapshotService:
                         skill_id=match.skill_id,
                         source="experience",
                         evidence="semantic match",
+                        definition=self._definition(match.skill_id),
                     ),
                 )
 
@@ -139,6 +152,7 @@ class SnapshotService:
                     skill_id=skill_id,
                     source="role_confirmed",
                     evidence="confirmed from role",
+                    definition=self._definition(skill_id),
                 ),
             )
 
@@ -159,7 +173,15 @@ class SnapshotService:
             skill_id=skill_id,
             source="experience",
             evidence=evidence,
+            definition=self._definition(skill_id),
         )
+
+    def _definition(self, skill_id: str) -> str | None:
+        value = self._skill_to_definition.get(skill_id)
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
 
     async def _semantic_skills(self, cv, session: AsyncSession) -> list[skills_repo.SkillMatch]:
         spans: list[str] = []
@@ -233,6 +255,7 @@ class SnapshotService:
                     skill_id=skill_id,
                     source="break",
                     from_activity=row.activity_id,
+                    definition=self._definition(skill_id) if skill_id else None,
                 )
             )
         return reframed

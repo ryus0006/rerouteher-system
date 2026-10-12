@@ -1,6 +1,8 @@
 import pytest
+from types import SimpleNamespace
 
 from app.schemas.companion import AskRequest
+from app.services.profile_skills import ProfileSkillMutation
 from app.services.companion import CompanionService
 from app.services.llm import GenerateResult
 
@@ -567,3 +569,225 @@ async def test_llm_error_degrades_gracefully_without_raising():
     resp = await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
     assert "trouble" in resp.answer.lower()
     assert resp.journey_update is None
+
+
+async def test_interview_note_grounds_on_question_transcript_feedback_and_coaching(monkeypatch):
+    import app.services.companion as companion_mod
+    from app.repositories.interview import QuestionCoaching
+
+    async def fake_coaching(session, question_id):
+        assert question_id == "GEN-001"
+        return QuestionCoaching(
+            question_id="GEN-001", role_id=None, question_text="Tell me about yourself.",
+            answer_framework="concise-summary",
+            answer_guidance="State your current focus and one evidence point.",
+            strong_evidence_signals="Specific context; clear contribution.",
+            watch_out_for="Generic answer.",
+            follow_up_question="Which part helps most?",
+        )
+
+    monkeypatch.setattr(companion_mod.interview_repo, "get_question_coaching", fake_coaching)
+
+    llm = ScriptedLlm([_text("Here is how to approach it.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo())
+    req = AskRequest(
+        question="How should I answer this?",
+        session_id="s1",
+        interview={
+            "question_id": "GEN-001", "question_text": "Tell me about yourself.",
+            "kind": "general", "transcript": "I led a small team.",
+            "feedback_summary": "Clear and relevant.",
+            "strengths": [{"title": "Relevance", "detail": "On topic."}],
+            "improvements": [{"title": "Add a result", "detail": "Say what changed."}],
+        },
+    )
+    await svc.ask(req, session=object(), username="aisha")
+
+    system = llm.calls[0]["system"]
+    assert "Tell me about yourself." in system       # the question
+    assert "I led a small team." in system           # her transcript
+    assert "Add a result" in system                  # her feedback
+    assert "concise-summary" in system               # coaching guidance (server-side)
+    assert "authoring_method" not in system.lower()  # authoring metadata never leaked
+
+
+async def test_no_interview_note_without_interview_context():
+    llm = ScriptedLlm([_text("hi")])
+    svc = CompanionService(llm=llm, repo=FakeRepo())
+    await svc.ask(AskRequest(question="hello", session_id="s1"), session=object(), username=None)
+    assert "Her latest answer transcript" not in llm.calls[0]["system"]
+
+
+class FakeProfileSkillService:
+    def __init__(self):
+        self.added = []
+        self.removed = []
+
+    async def match_skills(self, session, query, limit=3):
+        return [
+            SimpleNamespace(
+                skill_id="s1",
+                canonical_name="SQL",
+                definition="Query data.",
+                similarity=0.99,
+            ),
+            SimpleNamespace(
+                skill_id="s2",
+                canonical_name="Data analysis",
+                definition="Interpret data.",
+                similarity=0.74,
+            ),
+        ][:limit]
+
+    async def add_skill(self, session, username, skill_id):
+        self.added.append((username, skill_id))
+        return ProfileSkillMutation(
+            status="added",
+            skill_id=skill_id,
+            skill="SQL",
+            definition="Query data.",
+            plan={"snapshot": {"professional_skills": [{"skill_id": skill_id, "skill": "SQL"}]}},
+            snapshot={"professional_skills": [{"skill_id": skill_id, "skill": "SQL"}]},
+            gap_result=None,
+            learned_skills=[],
+        )
+
+    async def remove_skill(self, session, username, skill_id):
+        self.removed.append((username, skill_id))
+        return ProfileSkillMutation(
+            status="removed",
+            skill_id=skill_id,
+            skill="SQL",
+            definition="Query data.",
+            plan={"snapshot": {"professional_skills": []}},
+            snapshot={"professional_skills": []},
+            gap_result=None,
+            learned_skills=[],
+        )
+
+
+async def test_search_profile_skills_returns_taxonomy_candidates():
+    profile = FakeProfileSkillService()
+    llm = ScriptedLlm(
+        [_fn("search_profile_skills", {"query": "data"}), _text("I found two options.")]
+    )
+    svc = CompanionService(llm=llm, repo=FakeRepo(), profile_skill_service=profile)
+    resp = await svc.ask(
+        AskRequest(question="I learned data skills", session_id="s1"),
+        session=object(),
+        username=None,
+    )
+    assert [item.skill_id for item in resp.skill_matches] == ["s1", "s2"]
+    assert resp.skill_matches[0].definition == "Query data."
+    response = llm.calls[1]["contents"][-1]["parts"][0]["functionResponse"]["response"]
+    assert response["status"] == "found"
+    assert [item["skill_id"] for item in response["skills"]] == ["s1", "s2"]
+
+
+async def test_add_and_remove_profile_skill_tools_require_signed_in_user():
+    profile = FakeProfileSkillService()
+    llm = ScriptedLlm(
+        [
+            _fn("add_profile_skill", {"skill_id": "s1"}),
+            _fn("remove_profile_skill", {"skill_id": "s1"}),
+            _text("Done."),
+        ]
+    )
+    svc = CompanionService(llm=llm, repo=FakeRepo(), profile_skill_service=profile)
+    resp = await svc.ask(
+        AskRequest(question="yes, add it, then remove it", session_id="s1"),
+        session=object(),
+        username="aisha",
+    )
+    assert profile.added == [("aisha", "s1")]
+    assert profile.removed == [("aisha", "s1")]
+    assert resp.profile_skill_update.status == "removed"
+    assert resp.profile_skill_update.action == "remove"
+
+
+async def test_profile_skill_mutation_is_not_run_for_guest():
+    profile = FakeProfileSkillService()
+    llm = ScriptedLlm([_fn("add_profile_skill", {"skill_id": "s1"}), _text("Please sign in.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), profile_skill_service=profile)
+    resp = await svc.ask(
+        AskRequest(question="add SQL", session_id="s1"),
+        session=object(),
+        username=None,
+    )
+    assert profile.added == []
+    assert resp.profile_skill_update is None
+    response = llm.calls[1]["contents"][-1]["parts"][0]["functionResponse"]["response"]
+    assert response["status"] == "authentication_required"
+
+
+# --- _draft_note: the form-state the model sees while building (US8.1) --------
+
+def _svc():
+    return CompanionService(llm=ScriptedLlm([]), repo=FakeRepo())
+
+
+async def test_draft_note_reports_all_parts_missing_when_empty():
+    note = _svc()._draft_note(AskRequest(question="hi", session_id="s1"))
+    assert "MISSING work history" in note
+    assert "MISSING career break" in note
+    assert "MISSING skills" in note
+    assert "MISSING employer priorities" in note
+
+
+async def test_draft_note_reports_filled_parts_from_draft():
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        draft={
+            "cv": {
+                "experiences": [
+                    {
+                        "title": "Staff Nurse",
+                        "organisation": "Columbia Asia",
+                        "start": "2011",
+                        "end": "2019",
+                        "description": "ward care",
+                    }
+                ],
+            },
+            "break": {"duration_years": 6, "activities": ["childcare"]},
+            "employerPriorities": ["flexible_work"],
+        },
+        journey={"confirmedSkills": [{"skill_id": "s1", "skill_name": "Active Listening"}]},
+    )
+    note = _svc()._draft_note(req)
+    assert "FILLED work history: Staff Nurse at Columbia Asia (2011 to 2019)" in note
+    assert "FILLED career break" in note and "about 6" in note
+    assert "FILLED skills: Active Listening" in note
+    assert "FILLED employer priorities: flexible_work" in note
+    assert "MISSING" not in note
+
+
+async def test_draft_note_flags_role_missing_employer_or_dates():
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        draft={"cv": {"experiences": [{"title": "Nurse"}]}},
+    )
+    note = _svc()._draft_note(req)
+    assert "FILLED work history" in note
+    assert "missing its employer or dates" in note
+
+
+async def test_draft_note_silent_once_she_has_a_saved_cv():
+    # A saved CV means she is past building, so the note steps aside for _journey_note.
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        journey={"cv": {"raw_text": "x", "experiences": []}},
+    )
+    assert _svc()._draft_note(req) == ""
+
+
+async def test_draft_note_silent_once_she_has_a_snapshot():
+    req = AskRequest(
+        question="hi",
+        session_id="s1",
+        journey={"snapshot": {"professional_skills": []}},
+    )
+    assert _svc()._draft_note(req) == ""

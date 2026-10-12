@@ -59,6 +59,23 @@ async def get_plan(session: AsyncSession, username: str) -> dict | None:
     return json.loads(value) if isinstance(value, str) else value
 
 
+async def get_plan_for_update(session: AsyncSession, username: str) -> dict | None:
+    """Read a saved plan while locking its row for a read-modify-write mutation."""
+    row = (
+        await session.execute(
+            text(
+                "SELECT plan_json FROM rerouteher.saved_journey "
+                "WHERE username = :u FOR UPDATE"
+            ),
+            {"u": username},
+        )
+    ).first()
+    if row is None:
+        return None
+    value = row.plan_json
+    return json.loads(value) if isinstance(value, str) else value
+
+
 async def upsert_plan(session: AsyncSession, username: str, plan: dict) -> None:
     await session.execute(
         text(

@@ -8,6 +8,9 @@ class GapRequest(BaseModel):
     # Deterministic identifiers only: the role is resolved by primary key and skills are
     # matched by ESCO skill_id, so ambiguous display names never drive the computation.
     skill_ids: list[str] = []
+    # Skills the user ticked as held (not extracted from her CV). They cover a role
+    # skill on exact skill_id only, so a tick never credits a similar, unticked skill.
+    confirmed_skill_ids: list[str] = []
     target_role_id: str
     # Optional human label, kept for logs only; never used to resolve the role.
     target_role: str | None = None
@@ -19,9 +22,23 @@ class Gap(BaseModel):
     band: Literal["role", "ai_usage"]
     importance: float
     uplift: float
+    definition: str | None = None
+
+
+class HeldSkill(BaseModel):
+    # A role requirement the user already covers. Carries the ESCO id so the UI
+    # can request refresher resources for it deterministically (not by name), and
+    # the ESCO definition so the UI can show it on hover without a name lookup
+    # (met soft skills rarely share a name with the user's own extracted skills).
+    skill_id: str
+    skill: str
+    definition: str | None = None
+    # Soft skills are never listed as gaps, so the UI leaves them out of the
+    # met/total requirement count to keep the total stable.
+    band: Literal["role", "ai_usage", "soft"] = "role"
 
 
 class GapResponse(BaseModel):
     readiness: float
-    skills_have: list[str] = []
+    skills_have: list[HeldSkill] = []
     gaps: list[Gap] = []

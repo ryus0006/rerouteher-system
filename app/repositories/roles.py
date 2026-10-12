@@ -14,6 +14,7 @@ class RoleSkillRow:
     skill_name: str
     skill_type: str
     importance: float
+    definition: str | None = None
 
 
 @dataclass
@@ -98,14 +99,23 @@ async def get_role_with_skills_by_id(session: AsyncSession, role_id: str) -> Rol
     rows = (
         await session.execute(
             text(
-                "SELECT skill_id, skill_name, skill_type, importance "
-                "FROM role_skills WHERE role_id = :rid"
+                "SELECT rs.skill_id, rs.skill_name, rs.skill_type, rs.importance, "
+                "st.definition "
+                "FROM role_skills rs "
+                "LEFT JOIN skill_taxonomy st ON st.skill_id = rs.skill_id "
+                "WHERE rs.role_id = :rid"
             ),
             {"rid": role.role_id},
         )
     ).all()
     skills = [
-        RoleSkillRow(str(r.skill_id), r.skill_name, r.skill_type, float(r.importance))
+        RoleSkillRow(
+            str(r.skill_id),
+            r.skill_name,
+            r.skill_type,
+            float(r.importance),
+            r.definition,
+        )
         for r in rows
     ]
     return RoleWithSkills(role.role_id, role.role_title, role.ai_exposure, skills)

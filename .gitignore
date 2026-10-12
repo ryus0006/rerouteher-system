@@ -15,6 +15,9 @@ ml/*.pkl
 # local session logs
 var/
 
+# coding-agent implementation scratch (briefs, reports, progress ledger)
+.doku/
+
 # AI assistant instructions / config
 CLAUDE.md
 AGENTS.md
@@ -28,3 +31,7 @@ GEMINI.md
 # DB data dump from the db team: too large for GitHub (>100MB) and contains
 # reference + training/resume data. Obtain it from the db team and place at db/02_data.sql.
 db/02_data.sql
+
+# E7 Parakeet model: acquired (and checksum-verified) at image build time, not
+# committed. Place a local copy here to run the parakeet_smoke test.
+models/parakeet/

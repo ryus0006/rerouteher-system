@@ -4,6 +4,8 @@ A role skill is covered when the user has the exact ESCO skill (same skill_id) o
 whose embedding is at least gap_cosine_threshold similar - cosine is computed only between
 this role's skills and the user's skills, never the whole taxonomy, so a concrete CV skill
 (Java (Computer Programming)) covers the role's parent skill (Computer Programming).
+Skills the user ticked as held (confirmed_skill_ids) cover on exact skill_id only, so a
+tick never credits a similar skill she did not tick.
 Readiness blends two groups by the role's AI-exposure: the role band (technical + soft +
 digital) and the AI-usage band. Gaps are the uncovered non-soft skills ranked by uplift;
 soft skills count toward readiness but are never listed as gaps. Nothing is stored.
@@ -16,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.repositories import roles as roles_repo
-from app.schemas.gap import Gap, GapRequest, GapResponse
+from app.schemas.gap import Gap, GapRequest, GapResponse, HeldSkill
 
 logger = logging.getLogger("rerouteher")
 
@@ -35,8 +37,10 @@ class GapService:
             )
             return GapResponse(readiness=0.0, skills_have=[], gaps=[])
 
-        have_ids = {sid for sid in req.skill_ids if sid}
-        sims = await roles_repo.best_similarity_for_role(session, role.role_id, list(have_ids))
+        cv_ids = {sid for sid in req.skill_ids if sid}
+        have_ids = cv_ids | {sid for sid in req.confirmed_skill_ids if sid}
+        # embedding coverage comes from CV skills only; confirmed ticks match exactly
+        sims = await roles_repo.best_similarity_for_role(session, role.role_id, list(cv_ids))
         threshold = self._settings.gap_cosine_threshold
 
         cov: dict[str, float] = {}
@@ -53,7 +57,19 @@ class GapService:
 
         exposure_w = self._settings.ai_exposure_weight(role.ai_exposure)
         readiness = self._readiness(role.skills, cov, exposure_w)
-        skills_have = sorted({rs.skill_name for rs in role.skills if cov[rs.skill_id] >= 1.0})
+        # Held skills carry their ESCO id (deduped by id, listed by name) so the UI
+        # can fetch refresher resources for them deterministically, plus the ESCO
+        # definition so the UI can show it on hover.
+        held = {rs.skill_id: rs for rs in role.skills if cov[rs.skill_id] >= 1.0}
+        skills_have = [
+            HeldSkill(
+                skill_id=rs.skill_id,
+                skill=rs.skill_name,
+                definition=self._definition(rs.definition),
+                band=self._band(rs.skill_type),
+            )
+            for rs in sorted(held.values(), key=lambda rs: rs.skill_name)
+        ]
         gaps = self._rank_gaps(role.skills, cov, exposure_w, readiness)
         logger.info(
             "gap: target_id=%s (%r) -> role_id=%s role_skills=%d have_ids=%d exact=%d embed=%d readiness=%.1f",
@@ -100,10 +116,24 @@ class GapService:
                     band=band,
                     importance=float(rs.importance),
                     uplift=uplift,
+                    definition=self._definition(rs.definition),
                 )
             )
         gaps.sort(key=lambda g: (g.uplift, g.importance), reverse=True)
         return gaps
+
+    @staticmethod
+    def _band(skill_type: str) -> str:
+        if skill_type in ("ai_usage", "soft"):
+            return skill_type
+        return "role"
+
+    @staticmethod
+    def _definition(value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
 
     def _uplift(self, role_skills, cov: dict[str, float], exposure_w, base: float, skill_id: str) -> float:
         # marginal readiness gain if this skill were covered
