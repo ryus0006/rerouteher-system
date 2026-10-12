@@ -26,7 +26,7 @@ _FILLER_RE = re.compile(r"\b(?:u+m+|u+h+m*|e+r+m*|h+m+|m{2,})\b", re.IGNORECASE)
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 # A few fillers are normal; only coach when they are frequent.
 _FILLER_MIN_COUNT = 3
-_FILLER_FREQUENT_PER_100_WORDS = 5.0
+_FILLER_FREQUENT_PER_100_WORDS = 3.0
 
 # Checklist verdicts, biggest gap first; also the sort order for what_to_improve.
 _VERDICTS = ("not_met", "partly_met", "met")
@@ -102,6 +102,11 @@ _SYSTEM_PROMPT = (
     "  partly_met = it is present but thin, generic, or only implied;\n"
     "  not_met = it is missing.\n"
     "  Be strict: when unsure between two verdicts, choose the lower one.\n"
+    "- For relevance_to_question (if applicable), first split the question into every "
+    "part it asks for (for example a what, a why and a how). Relevance is met only if "
+    "the answer covers every part; if any part is missing or only implied, it is at most "
+    "partly_met, and the missing part is a gap to file under relevance unless another "
+    "applicable criterion covers it more exactly.\n"
     "- Then check every item in \"Things to watch out for\" and \"Strong-evidence signals\" "
     "against the transcript. Every watch-out issue present in the answer must appear in "
     "what_to_improve, and the criterion it is filed under cannot be met.\n\n"
@@ -113,8 +118,9 @@ _SYSTEM_PROMPT = (
     "than three qualify, keep the most impactful three, giving watch-out issues "
     "priority.\n"
     "- summary: one or two sentences. If anything was met, recognise it briefly, then name "
-    "the most important thing to work on. Never describe a not_met or partly_met criterion "
-    "as a strength.\n\n"
+    "the most important thing to work on, which must be the same change as the first "
+    "what_to_improve item, not a different one. Never describe a not_met or partly_met "
+    "criterion as a strength.\n\n"
     "Rules:\n"
     "- Evaluate only what is in the transcript and the context given below. Never invent "
     "experience, skills, employers, achievements, responsibilities or results that are not "
@@ -123,9 +129,13 @@ _SYSTEM_PROMPT = (
     "numeric score anywhere in this task.\n"
     "- Each item's detail must be about what that criterion checks, as defined in its "
     "line. Write the advice first, then pick the criterion whose definition it matches; "
-    "if it fits a different criterion better, use that one instead. If a watch-out issue "
-    "has no dedicated applicable criterion, file it under the closest applicable one and "
-    "name the issue plainly in the detail.\n"
+    "if it fits a different criterion better, use that one instead. A what_to_improve "
+    "detail must also point the same way as that criterion's \"improve by\" direction; "
+    "never file advice under a criterion whose direction it contradicts (for example, "
+    "advice to add something under a criterion that asks for less). If a watch-out issue "
+    "has no dedicated applicable criterion, file it under the closest applicable one whose "
+    "direction it does not contradict and name the issue plainly in the detail; if none "
+    "fits, leave it out of what_to_improve.\n"
     "- Follow each criterion's stated restriction exactly when you use it.\n"
     "- Never reward or penalise accent, fluency style, cultural familiarity, employer "
     "prestige, or credential prestige. The only exception is the filler-word note "
@@ -168,6 +178,7 @@ _SYSTEM_PROMPT = (
 def _criteria_block(criteria: list[CriterionRow]) -> str:
     lines = [
         f"- {c.criterion_id} ({c.criterion}): checks: {c.what_ai_checks or c.criterion} "
+        f"| improve by: {c.improvement_feedback_tag.replace('_', ' ')} "
         f"| restriction: {c.prohibited_inference}"
         for c in criteria
     ]
@@ -205,7 +216,8 @@ def _build_user_content(data: FeedbackInput) -> str:
         f"Question: {data.question_text}\n"
         f"Target role: {role}\n"
         f"Her saved skill labels: {skills}\n\n"
-        f"Applicable criteria (each line: id (name): what it checks | restriction):\n"
+        f"Applicable criteria (each line: id (name): what it checks | improve by | "
+        f"restriction):\n"
         f"{_criteria_block(data.criteria)}\n\n"
         f"{_question_design_context_block(data)}\n\n"
         f"{_filler_note(data.transcript)}\n\n"
