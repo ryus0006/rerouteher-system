@@ -68,8 +68,10 @@ class JobSearchService:
         sources=None,
         location: str = "Malaysia",
         clock=None,
+        relevance=None,
     ) -> None:
         self._jobs_repo = jobs_repo
+        self._relevance = relevance
         self._employer_repo = employer_repo
         self._sources = list(sources or [])
         self._location = location
@@ -159,12 +161,23 @@ class JobSearchService:
                 )
                 continue
 
+            at_tracked: list[tuple[JobCandidate, str]] = []
             for candidate in candidates:
                 if not candidate.title.strip() or not candidate.url.strip():
                     continue
                 employer_id = self._match_employer(candidate.company_name, tracked)
-                if employer_id is None:
-                    continue
+                if employer_id is not None:
+                    at_tracked.append((candidate, employer_id))
+
+            # Boards search loosely, so drop openings that are not for this role
+            # before they are stored as hiring for it.
+            if self._relevance is not None and at_tracked:
+                relevant = await self._relevance.keep(
+                    role.search_title, [candidate for candidate, _ in at_tracked]
+                )
+                at_tracked = [(c, e) for c, e in at_tracked if c in relevant]
+
+            for candidate, employer_id in at_tracked:
                 key = (_title_key(candidate.title), _company_key(candidate.company_name))
                 previous = candidates_by_key.get(key)
                 if previous is None or (

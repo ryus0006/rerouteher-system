@@ -28,6 +28,7 @@ from app.services.gap import GapService
 from app.services.interview import InterviewService
 from app.services.interview_feedback import InterviewFeedbackService
 from app.services.interview_privacy import TranscriptRedactor
+from app.services.job_relevance import JobRelevanceFilter
 from app.services.job_search import JobSearchService
 from app.services.job_sources import (
     FounditJobSource,
@@ -160,9 +161,11 @@ async def lifespan(app: FastAPI):
         timeout_s=settings.foundit_timeout_s,
     )))
     job_sources.append(("tavily", TavilyGeminiJobSource(tavily_searcher, llm)))
+    # Gemini checks each opening is for the role; falls back to a whole-word title check.
     app.state.job_search_service = JobSearchService(
         sources=job_sources,
         location=settings.job_search_location,
+        relevance=JobRelevanceFilter(llm),
     )
     app.state.employer_service = EmployerService(
         job_search=app.state.job_search_service,
