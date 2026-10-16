@@ -252,3 +252,39 @@ async def test_generate_raises_when_every_model_fails(monkeypatch):
     with pytest.raises(LlmError, match="http 503"):
         await client.generate(system_instruction="s", contents=[], tools=None)
     assert calls == [("main", "k"), ("backup", "k")]
+
+
+@pytest.mark.asyncio
+async def test_timeout_skips_remaining_keys_and_goes_to_fallback_model(monkeypatch):
+    # A timeout is the model being slow, not the key: the other keys would wait
+    # just as long, so the client moves straight to the fallback model.
+    calls = []
+    import app.services.llm as llm_mod
+
+    class SlowMainModel:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            model = url.split("/models/")[1].split(":")[0]
+            key = headers["x-goog-api-key"]
+            calls.append((model, key))
+            if model == "main":
+                raise llm_mod.httpx.ReadTimeout("")
+            return _Resp(200, f"{model}/{key}")
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", SlowMainModel)
+    client = GeminiClient(
+        api_keys=["k1", "k2", "k3"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "backup"
+    assert calls == [("main", "k1"), ("backup", "k1")]

@@ -93,13 +93,26 @@ class GeminiClient:
         # Try the active key, then each remaining key on any failure: a network
         # error, a rate limit (429), or any other HTTP error (a revoked key gives
         # 403, a transient Gemini fault gives 5xx). The last error is surfaced
-        # only once every key has been tried.
+        # only once every key has been tried. A timeout is the exception: it
+        # ends this model's turn at once (see below).
         last_error = "gemini call failed"
         for _ in range(len(self._api_keys)):
             key = self._api_keys[self._index]
             try:
                 async with httpx.AsyncClient(timeout=self._timeout_s) as client:
                     resp = await client.post(url, json=body, headers={"x-goog-api-key": key})
+            except httpx.TimeoutException as exc:
+                # A timeout means the model itself is slow, not this key, so the
+                # other keys would wait just as long. Move on to the next model.
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "gemini key #%d timed out (%s) url=%s timeout=%ss; skipping the other keys for this model",
+                    self._index + 1,
+                    last_error,
+                    url,
+                    self._timeout_s,
+                )
+                return None, last_error
             except Exception as exc:  # noqa: BLE001
                 # Many httpx errors (e.g. ConnectTimeout/ReadTimeout) stringify to
                 # an empty message, so include the exception type and the target
