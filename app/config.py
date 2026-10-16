@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Comma-separated models tried in order when every key fails on gemini_model
     # (e.g. a 503 "model overloaded"). Empty -> no model fallback.
     gemini_fallback_models: str = "gemini-3.5-flash-lite"
+    # Once a fallback model has answered, calls stay on it this long before the
+    # main model is tried again, so an outage is not re-checked on every call.
+    gemini_fallback_cooldown_s: float = 600.0
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_timeout_s: float = 30.0
 

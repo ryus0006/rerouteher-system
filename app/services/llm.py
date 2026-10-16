@@ -6,10 +6,12 @@ Supports key rotation: when a call on the active key fails (network error, rate
 limit, or any other HTTP error), it falls back to the next configured key and
 remembers the key that worked for later requests. When every key fails on the
 main model (e.g. a 503 "model overloaded"), it tries each fallback model in turn
-with the same keys."""
+with the same keys. The model that worked is remembered too: later calls start on
+it for a cooldown, then the main model is tried again."""
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -37,6 +39,7 @@ class GeminiClient:
         base_url: str,
         timeout_s: float,
         fallback_models: list[str] | None = None,
+        fallback_cooldown_s: float = 600.0,
     ) -> None:
         if not api_keys:
             raise ValueError("GeminiClient needs at least one API key")
@@ -44,6 +47,9 @@ class GeminiClient:
         self._index = 0  # active key; advances when a key is rate-limited
         self.model = model
         self.fallback_models = [m for m in (fallback_models or []) if m != model]
+        self._fallback_cooldown_s = fallback_cooldown_s
+        self._active_model = 0  # index into [model, *fallback_models]; sticky like the key
+        self._retry_main_at = 0.0  # monotonic time after which the main model is tried again
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
 
@@ -59,6 +65,7 @@ class GeminiClient:
             settings.gemini_base_url,
             settings.gemini_timeout_s,
             settings.gemini_fallback_model_list,
+            settings.gemini_fallback_cooldown_s,
         )
 
     async def generate(
@@ -71,19 +78,36 @@ class GeminiClient:
         if tools:
             body["tools"] = tools
 
-        last_error = "gemini call failed"
         models = [self.model, *self.fallback_models]
-        for n, model in enumerate(models):
+        # Start on the model that last worked while its cooldown runs, so a down
+        # main model is not re-checked (and waited on) by every call.
+        start = self._active_model
+        if start and time.monotonic() >= self._retry_main_at:
+            logger.info("gemini fallback cooldown over; trying main model %s again", self.model)
+            start = self._active_model = 0
+        order = list(range(start, len(models))) + list(range(start))
+
+        last_error = "gemini call failed"
+        for n, i in enumerate(order):
             if n:
                 logger.warning(
                     "gemini model %s failed on every key (%s); falling back to %s",
-                    models[n - 1],
+                    models[order[n - 1]],
                     last_error,
-                    model,
+                    models[i],
                 )
-            result, last_error = await self._generate_with_keys(model, body)
-            if result is not None:
-                return result
+            result, last_error = await self._generate_with_keys(models[i], body)
+            if result is None:
+                continue
+            if i != start:  # had to switch this call: remember it and start the cooldown
+                self._active_model = i
+                self._retry_main_at = time.monotonic() + self._fallback_cooldown_s
+                if i:
+                    logger.warning(
+                        "gemini now using %s; main model %s retried in %ss",
+                        models[i], self.model, int(self._fallback_cooldown_s),
+                    )
+            return result
         raise LlmError(f"all Gemini keys failed: {last_error}")
 
     async def _generate_with_keys(self, model: str, body: dict) -> tuple[GenerateResult | None, str]:
