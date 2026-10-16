@@ -52,10 +52,10 @@ class Settings(BaseSettings):
     # rotates to the next non-empty one. Set as many as you have quota for.
     gemini_api_key_2: str = ""
     gemini_api_key_3: str = ""
-    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_model: str = "gemini-3.5-flash-lite"
     # Comma-separated models tried in order when every key fails on gemini_model
     # (e.g. a 503 "model overloaded"). Empty -> no model fallback.
-    gemini_fallback_models: str = "gemini-3.5-flash-lite"
+    gemini_fallback_models: str = "gemini-3.1-flash-lite"
     # Once a fallback model has answered, calls stay on it this long before the
     # main model is tried again, so an outage is not re-checked on every call.
     gemini_fallback_cooldown_s: float = 600.0

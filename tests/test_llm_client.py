@@ -172,7 +172,7 @@ async def test_generate_raises_when_all_keys_fail(monkeypatch):
 
 
 def test_settings_fallback_model_list_default_and_parsing():
-    assert Settings().gemini_fallback_model_list == ["gemini-3.5-flash-lite"]
+    assert Settings().gemini_fallback_model_list == ["gemini-3.1-flash-lite"]
     assert Settings(gemini_fallback_models=" a , ,b ").gemini_fallback_model_list == ["a", "b"]
     assert Settings(gemini_fallback_models="").gemini_fallback_model_list == []
 
