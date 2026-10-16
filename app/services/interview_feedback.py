@@ -414,5 +414,5 @@ class InterviewFeedbackService:
 
         return FeedbackResult(
             summary=summary, strengths=strengths, improvements=improvements,
-            model=self._llm.model, tokens_in=result.tokens_in, tokens_out=result.tokens_out,
+            model=result.model or self._llm.model, tokens_in=result.tokens_in, tokens_out=result.tokens_out,
         )

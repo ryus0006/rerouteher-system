@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     gemini_api_key_2: str = ""
     gemini_api_key_3: str = ""
     gemini_model: str = "gemini-3.1-flash-lite"
+    # Comma-separated models tried in order when every key fails on gemini_model
+    # (e.g. a 503 "model overloaded"). Empty -> no model fallback.
+    gemini_fallback_models: str = "gemini-3.5-flash-lite"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_timeout_s: float = 30.0
 
@@ -99,6 +102,10 @@ class Settings(BaseSettings):
         return [
             k for k in (self.gemini_api_key, self.gemini_api_key_2, self.gemini_api_key_3) if k
         ]
+
+    @property
+    def gemini_fallback_model_list(self) -> list[str]:
+        return [m.strip() for m in self.gemini_fallback_models.split(",") if m.strip()]
 
     @property
     def llm_configured(self) -> bool:

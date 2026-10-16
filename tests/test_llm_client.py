@@ -169,3 +169,86 @@ async def test_generate_raises_when_all_keys_fail(monkeypatch):
     with pytest.raises(LlmError):
         await client.generate(system_instruction="s", contents=[], tools=None)
     assert calls == ["k1", "k2"]
+
+
+def test_settings_fallback_model_list_default_and_parsing():
+    assert Settings().gemini_fallback_model_list == ["gemini-3.5-flash-lite"]
+    assert Settings(gemini_fallback_models=" a , ,b ").gemini_fallback_model_list == ["a", "b"]
+    assert Settings(gemini_fallback_models="").gemini_fallback_model_list == []
+
+
+def test_from_settings_passes_fallback_models_and_drops_the_main_model():
+    client = GeminiClient.from_settings(
+        Settings(gemini_api_key="k", gemini_model="m", gemini_fallback_models="m,f")
+    )
+    assert client.fallback_models == ["f"]
+
+
+def _fake_client_by_model(status_for, calls):
+    class FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            model = url.split("/models/")[1].split(":")[0]
+            key = headers["x-goog-api-key"]
+            calls.append((model, key))
+            return _Resp(status_for(model, key), f"{model}/{key}")
+
+    return FakeAsyncClient
+
+
+@pytest.mark.asyncio
+async def test_generate_falls_back_to_next_model_when_every_key_fails(monkeypatch):
+    calls = []
+    import app.services.llm as llm_mod
+
+    status = lambda model, key: 503 if model == "main" else 200  # noqa: E731
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(status, calls))
+    client = GeminiClient(
+        api_keys=["k1", "k2"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "backup"
+    assert calls[:2] == [("main", "k1"), ("main", "k2")]  # every key on the main model first
+    assert calls[2][0] == "backup"
+
+
+@pytest.mark.asyncio
+async def test_generate_reports_main_model_when_it_answers(monkeypatch):
+    calls = []
+    import app.services.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(lambda m, k: 200, calls))
+    client = GeminiClient(
+        api_keys=["k"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "main"
+    assert calls == [("main", "k")]
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_when_every_model_fails(monkeypatch):
+    calls = []
+    import app.services.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(lambda m, k: 503, calls))
+    client = GeminiClient(
+        api_keys=["k"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    with pytest.raises(LlmError, match="http 503"):
+        await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("main", "k"), ("backup", "k")]
