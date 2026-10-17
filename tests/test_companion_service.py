@@ -791,3 +791,173 @@ async def test_draft_note_silent_once_she_has_a_snapshot():
         journey={"snapshot": {"professional_skills": []}},
     )
     assert _svc()._draft_note(req) == ""
+
+
+@pytest.mark.parametrize(
+    "answer,tools,expected",
+    [
+        ("I've saved your career break details.", [], ["profile_saved"]),
+        ("I've saved your career break details.", [("update_profile", "saved")], []),
+        ("Your profile has been updated.", [("update_profile", "error")], ["profile_saved"]),
+        ("I've added Excel to your skills.", [], ["skill_added"]),
+        ("I've added Excel to your skills.", [("add_profile_skill", "added")], []),
+        ("I've added Excel to your skills.", [("add_profile_skill", "authentication_required")], ["skill_added"]),
+        ("I've added those details to your profile.", [("update_profile", "saved")], []),
+        ("Done, I removed SQL from your profile.", [("remove_profile_skill", "removed")], []),
+        ("I've opened your learning plan.", [], ["navigated"]),
+        ("It is not saved yet. Please sign in first.", [], []),
+        ("Once you sign in I will add it to your skills.", [], []),
+        ("Tell me about your last job.", [], []),
+    ],
+)
+async def test_unbacked_claims(answer, tools, expected):
+    from app.services.companion import _unbacked_claims
+
+    assert _unbacked_claims(answer, tools) == expected
+
+
+async def test_turn_logs_tools_without_text_and_flags_unbacked_claim(caplog):
+    import logging
+
+    svc = CompanionService(llm=ScriptedLlm([_text("I've saved your career break details.")]), repo=FakeRepo())
+    with caplog.at_level(logging.INFO, logger="rerouteher"):
+        await svc.ask(AskRequest(question="I cared for my kids 3 years", session_id="s1"), session=object(), username=None)
+    messages = [r.getMessage() for r in caplog.records]
+    turn = next(m for m in messages if m.startswith("companion turn:"))
+    assert "tools=- question_chars=27 answer_chars=37" in turn
+    warning = next(r for r in caplog.records if r.getMessage().startswith("companion unbacked claim:"))
+    assert warning.levelno == logging.WARNING and "claims=profile_saved" in warning.getMessage()
+    # No user input or model output in any log line.
+    assert not any("cared for my kids" in m or "career break details" in m for m in messages)
+
+
+async def test_backed_claim_logs_tools_without_warning(caplog):
+    import logging
+
+    args = {"cv": {"raw_text": "Admin 6y", "experiences": [], "skill_mentions": []}}
+    llm = ScriptedLlm([_fn("update_profile", args), _text("I've saved your profile.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo())
+    with caplog.at_level(logging.INFO, logger="rerouteher"):
+        await svc.ask(AskRequest(question="I was an admin", session_id="s1"), session=object(), username="u")
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("tools=update_profile:saved" in m for m in messages if m.startswith("companion turn:"))
+    assert not any(m.startswith("companion unbacked claim:") for m in messages)
+
+
+_BREAK_ARGS = {
+    "cv": {"raw_text": "", "experiences": [{"title": "Admin", "organisation": "Maju", "start": "2012", "end": "2018"}]},
+    "break": {"duration_years": 3, "activities": ["care_household.cared_for_children"]},
+}
+
+
+async def test_verify_saves_a_detail_hera_only_claimed():
+    # Hera says "saved" without calling the tool; the verify pass saves it.
+    llm = ScriptedLlm([_text("Saved your break."), _fn("update_profile", _BREAK_ARGS)])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="3 years with my kids", session_id="s1"), session=object(), username=None)
+    assert resp.journey_update is not None and resp.journey_update.break_.duration_years == 3
+    verify_call = llm.calls[1]
+    assert verify_call["tools"][0]["function_declarations"][0]["name"] == "update_profile"
+    assert "User: 3 years with my kids" in verify_call["contents"][0]["parts"][0]["text"]
+    assert "Hera: Saved your break." in verify_call["contents"][0]["parts"][0]["text"]
+
+
+async def test_verify_ok_leaves_no_update():
+    llm = ScriptedLlm([_text("Which company was that?"), _text("OK")])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="software developer", session_id="s1"), session=object(), username=None)
+    assert resp.journey_update is None and len(llm.calls) == 2
+
+
+async def test_verify_ignores_an_update_that_changes_nothing():
+    draft = {"cv": {"raw_text": "", "experiences": _BREAK_ARGS["cv"]["experiences"], "skill_mentions": []},
+             "break": _BREAK_ARGS["break"], "employerPriorities": []}
+    llm = ScriptedLlm([_text("Anything else?"), _fn("update_profile", _BREAK_ARGS)])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="no", session_id="s1", draft=draft), session=object(), username=None)
+    assert resp.journey_update is None
+
+
+async def test_verify_result_replaces_hera_update_and_backs_the_claim(caplog):
+    import logging
+
+    hera = {"cv": {"raw_text": "", "experiences": _BREAK_ARGS["cv"]["experiences"]}}
+    llm = ScriptedLlm([_fn("update_profile", hera), _text("I've saved your career break."), _fn("update_profile", _BREAK_ARGS)])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    with caplog.at_level(logging.INFO, logger="rerouteher"):
+        resp = await svc.ask(AskRequest(question="3 years off", session_id="s1"), session=object(), username=None)
+    assert resp.journey_update.break_ is not None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("companion verify:") and "result=saved" in m for m in messages)
+    assert any("tools=update_profile:saved,verify_profile:saved" in m for m in messages)
+    assert not any(m.startswith("companion unbacked claim:") for m in messages)
+
+
+async def test_verify_missed_mode_skips_when_hera_saved():
+    llm = ScriptedLlm([_fn("update_profile", _BREAK_ARGS), _text("Saved.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="missed")
+    await svc.ask(AskRequest(question="3 years off", session_id="s1"), session=object(), username=None)
+    assert len(llm.calls) == 2  # Hera's two passes, no verify pass
+
+
+async def test_verify_skipped_outside_build_mode_and_when_off():
+    for verify_mode, journey in [
+        ("always", {"cv": {"raw_text": "x", "experiences": [], "skill_mentions": []}}),
+        ("off", {}),
+    ]:
+        llm = ScriptedLlm([_text("Hi.")])
+        svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode=verify_mode)
+        await svc.ask(AskRequest(question="hi", session_id="s1", journey=journey), session=object(), username=None)
+        assert len(llm.calls) == 1
+
+
+async def test_verify_failure_keeps_the_answer():
+    llm = ScriptedLlm([_text("Got it.")])  # no scripted reply left -> the verify call raises
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
+    assert resp.answer == "Got it." and resp.journey_update is None
+
+
+async def test_verify_ignores_invalid_args():
+    # Invalid args from the verify pass are ignored rather than failing the turn.
+    llm = ScriptedLlm([_text("Which years?"), _fn("update_profile", {"break": {"duration_years": "lots"}})])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="a while", session_id="s1"), session=object(), username=None)
+    assert resp.journey_update is None
+
+
+async def test_verify_treats_an_empty_profile_as_no_change():
+    empty = {"cv": {"raw_text": "", "experiences": [], "skill_mentions": []}, "employerPriorities": []}
+    llm = ScriptedLlm([_text("What was your last job?"), _fn("update_profile", empty)])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="hello", session_id="s1"), session=object(), username=None)
+    assert resp.journey_update is None
+
+
+async def test_verify_leaves_out_a_new_role_without_dates():
+    args = {"cv": {"raw_text": "", "experiences": [{"title": "Software Developer"}]}}
+    llm = ScriptedLlm([_text("Which company, and when?"), _fn("update_profile", args)])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="software developer", session_id="s1"), session=object(), username=None)
+    assert resp.journey_update is None
+
+
+async def test_verify_keeps_a_dateless_role_already_in_the_draft():
+    role = {"title": "Admin", "organisation": "Maju"}
+    draft = {"cv": {"raw_text": "", "experiences": [role], "skill_mentions": []}}
+    args = {"cv": {"raw_text": "", "experiences": [{**role, "description": "Ran the office"}]}}
+    llm = ScriptedLlm([_text("Thanks."), _fn("update_profile", args)])
+    svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="always")
+    resp = await svc.ask(AskRequest(question="I ran the office", session_id="s1", draft=draft), session=object(), username=None)
+    assert resp.journey_update.cv.experiences[0].description == "Ran the office"
+
+
+async def test_invalid_profile_args_log_has_no_profile_text(caplog):
+    import logging
+
+    llm = ScriptedLlm([_fn("update_profile", {"cv": '{"raw_text": "Siti at Maju Logistics"}'}), _text("Hmm.")])
+    svc = CompanionService(llm=llm, repo=FakeRepo())
+    with caplog.at_level(logging.WARNING, logger="rerouteher"):
+        await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
+    line = next(r.getMessage() for r in caplog.records if "args invalid" in r.getMessage())
+    assert "cv:model_type" in line and "Maju" not in line

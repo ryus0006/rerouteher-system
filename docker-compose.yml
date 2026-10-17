@@ -59,6 +59,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
       EDGEMODE_API_KEY: ${EDGEMODE_API_KEY:-}
       EDGEMODE_MODEL: ${EDGEMODE_MODEL:-qwen3-235b}
+      COMPANION_VERIFY_MODE: ${COMPANION_VERIFY_MODE:-missed}
       # E6 learning-material fill. Web search via the Tavily API (official, free
       # tier). Empty -> learning fill degrades off, learning page keeps its fallback.
       # Backup keys rotate on a 429, same as the Gemini keys.

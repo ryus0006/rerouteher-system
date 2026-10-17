@@ -139,6 +139,7 @@ async def lifespan(app: FastAPI):
         llm=llm,
         role_resolver=app.state.snapshot_service,
         profile_skill_service=app.state.profile_skill_service,
+        verify_mode=settings.companion_verify_mode,
     )
     # E6 on-demand learning fill: Tavily search + Gemini pick, run in the background
     # after a gap is computed. Disabled (degrades to the YouTube fallback) if either

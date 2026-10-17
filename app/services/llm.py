@@ -37,6 +37,30 @@ class GenerateResult:
     model: str = ""  # the model that produced this answer (main or a fallback)
 
 
+def _log_call(provider: str, started: float, result: GenerateResult, tools: list[dict] | None) -> None:
+    """One line per LLM pass, so a slow request can be split into its passes:
+    duration, tokens, and what the output tokens went on (text vs each tool call)."""
+    parts = result.content.get("parts") or []
+    text_chars = sum(len(p["text"]) for p in parts if isinstance(p.get("text"), str))
+    calls = [
+        f"{p['functionCall'].get('name')}({len(json.dumps(p['functionCall'].get('args') or {}))} chars)"
+        for p in parts
+        if "functionCall" in p
+    ]
+    offered = sum(len(t.get("function_declarations") or []) for t in tools or [])
+    logger.info(
+        "llm pass: provider=%s model=%s ms=%.0f tokens_in=%d tokens_out=%d tools_offered=%d text_chars=%d calls=%s",
+        provider,
+        result.model,
+        (time.monotonic() - started) * 1000,
+        result.tokens_in,
+        result.tokens_out,
+        offered,
+        text_chars,
+        ",".join(calls) or "-",
+    )
+
+
 class GeminiClient:
     def __init__(
         self,
@@ -84,6 +108,7 @@ class GeminiClient:
         if tools:
             body["tools"] = tools
 
+        started = time.monotonic()
         models = [self.model, *self.fallback_models]
         # Start on the model that last worked while its cooldown runs, so a down
         # main model is not re-checked (and waited on) by every call.
@@ -113,6 +138,7 @@ class GeminiClient:
                         "gemini now using %s; main model %s retried in %ss",
                         models[i], self.model, int(self._fallback_cooldown_s),
                     )
+            _log_call("gemini", started, result, tools)
             return result
         raise LlmError(f"all Gemini keys failed: {last_error}")
 
@@ -261,6 +287,23 @@ def _to_openai_messages(system_instruction: str, contents: list[dict]) -> list[d
     return messages
 
 
+def _decode_nested(args: dict) -> dict:
+    """Qwen sometimes sends a nested object argument as a JSON string, e.g.
+    {"cv": "{\\"raw_text\\": ...}"}. Decode a top-level string that holds a JSON object
+    or array so the tool gets the structure its schema declares."""
+    out = {}
+    for key, value in args.items():
+        if isinstance(value, str) and value.lstrip()[:1] in ("{", "["):
+            try:
+                decoded = json.loads(value)
+            except (ValueError, RecursionError):
+                decoded = value
+            out[key] = decoded if isinstance(decoded, (dict, list)) else value
+        else:
+            out[key] = value
+    return out
+
+
 def _to_gemini_content(message: dict) -> dict:
     """OpenAI assistant message -> Gemini content (text part + functionCall parts)."""
     parts: list[dict] = []
@@ -279,7 +322,7 @@ def _to_gemini_content(message: dict) -> dict:
         # Callers read args with .get(); anything but an object would crash them.
         if not isinstance(args, dict):
             raise LlmError(f"tool call {fn.get('name')!r} arguments are not a JSON object")
-        parts.append({"functionCall": {"name": fn.get("name", ""), "args": args}})
+        parts.append({"functionCall": {"name": fn.get("name", ""), "args": _decode_nested(args)}})
     return {"role": "model", "parts": parts}
 
 
@@ -314,6 +357,7 @@ class EdgemodeClient:
         if openai_tools:
             body["tools"] = openai_tools
         url = f"{self._base_url}/chat/completions"
+        started = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=self._timeout_s) as client:
                 resp = await client.post(
@@ -342,12 +386,14 @@ class EdgemodeClient:
         completion = int(usage.get("completion_tokens") or 0)
         if not completion and usage.get("total_tokens"):
             completion = int(usage["total_tokens"]) - prompt
-        return GenerateResult(
+        result = GenerateResult(
             content=_to_gemini_content(choices[0].get("message") or {}),
             tokens_in=prompt,
             tokens_out=max(completion, 0),
             model=self.model,
         )
+        _log_call("edgemode", started, result, tools)
+        return result
 
 
 def create_llm_client(settings) -> "GeminiClient | EdgemodeClient | None":

@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     edgemode_base_url: str = "https://api.console.edgemode.ai/v1"
     edgemode_timeout_s: float = 30.0
 
+    # Companion profile verify pass after each build turn, so a detail she gives is saved
+    # even when the model does not call update_profile: "always", "missed" (only when the
+    # model did not save that turn) or "off". "missed" suits Gemini, which saves reliably
+    # (it avoids an extra free-tier call per turn); use "always" with Edgemode/Qwen.
+    companion_verify_mode: str = "missed"
+
     # E6 on-demand learning fill (Tavily search + Gemini picks one free resource).
     learning_fill_enabled: bool = True
     learning_fill_url_timeout_s: float = 6.0

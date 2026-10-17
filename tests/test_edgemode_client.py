@@ -218,3 +218,32 @@ def test_response_with_non_object_tool_arguments_raises(raw):
 )
 def test_reasoning_is_stripped_even_when_unclosed(text, expected):
     assert _to_gemini_content({"content": text})["parts"] == expected
+
+
+@pytest.mark.asyncio
+async def test_generate_logs_one_line_per_pass(monkeypatch, caplog):
+    import logging
+
+    import app.services.llm as llm_mod
+
+    data = {
+        "choices": [{"message": {
+            "content": "Saving now.",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "save", "arguments": '{"a": 1}'}}],
+        }}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 30},
+    }
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client(_Resp(200, data)))
+    with caplog.at_level(logging.INFO, logger="rerouteher"):
+        await EdgemodeClient("k", "m", "https://e/v1", 5).generate(system_instruction="s", contents=[], tools=TOOLS)
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("llm pass:"))
+    assert "provider=edgemode model=m" in line
+    assert "tokens_in=100 tokens_out=30 tools_offered=2 text_chars=11 calls=save(8 chars)" in line
+
+
+def test_nested_object_sent_as_a_json_string_is_decoded():
+    raw = json.dumps({"cv": json.dumps({"raw_text": "x", "experiences": []}), "note": "{not json", "n": "{}x"})
+    content = _to_gemini_content({"tool_calls": [{"function": {"name": "update_profile", "arguments": raw}}]})
+    args = content["parts"][0]["functionCall"]["args"]
+    assert args["cv"] == {"raw_text": "x", "experiences": []}
+    assert args["note"] == "{not json" and args["n"] == "{}x"  # left alone when not valid JSON
