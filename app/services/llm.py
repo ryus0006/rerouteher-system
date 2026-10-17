@@ -195,8 +195,9 @@ class GeminiClient:
         return None, last_error
 
 
-# Qwen3 can emit its reasoning inline; it is never part of the answer.
-_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+# Qwen3 can emit its reasoning inline; it is never part of the answer. A block cut
+# off before its closing tag (e.g. at the token limit) is dropped to the end too.
+_THINK_BLOCK = re.compile(r"<\s*think\s*>.*?(?:<\s*/\s*think\s*>\s*|$)", re.DOTALL | re.IGNORECASE)
 
 
 def _to_openai_tools(tools: list[dict] | None) -> list[dict]:
@@ -271,9 +272,14 @@ def _to_gemini_content(message: dict) -> dict:
         raw = fn.get("arguments") or "{}"
         try:
             args = json.loads(raw) if isinstance(raw, str) else raw
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise LlmError(f"tool call {fn.get('name')!r} arguments are not valid JSON") from exc
-        parts.append({"functionCall": {"name": fn.get("name", ""), "args": args or {}}})
+        if args is None:
+            args = {}
+        # Callers read args with .get(); anything but an object would crash them.
+        if not isinstance(args, dict):
+            raise LlmError(f"tool call {fn.get('name')!r} arguments are not a JSON object")
+        parts.append({"functionCall": {"name": fn.get("name", ""), "args": args}})
     return {"role": "model", "parts": parts}
 
 

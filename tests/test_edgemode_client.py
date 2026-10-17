@@ -199,3 +199,22 @@ async def test_generate_failures_raise_llm_error(monkeypatch, response, exc):
     monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client(response, exc))
     with pytest.raises(LlmError):
         await EdgemodeClient("k", "m", "https://e/v1", 5).generate(system_instruction="s", contents=[], tools=None)
+
+
+@pytest.mark.parametrize("raw", ['["a", "b"]', '"text"', "42"])
+def test_response_with_non_object_tool_arguments_raises(raw):
+    with pytest.raises(LlmError):
+        _to_gemini_content({"tool_calls": [{"function": {"name": "f", "arguments": raw}}]})
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("<THINK>secret</THINK>Answer", [{"text": "Answer"}]),
+        ("< think >secret</ think > Answer", [{"text": "Answer"}]),
+        ("<think>cut off before the closing tag", []),
+        ("Answer <think>trailing reasoning", [{"text": "Answer"}]),
+    ],
+)
+def test_reasoning_is_stripped_even_when_unclosed(text, expected):
+    assert _to_gemini_content({"content": text})["parts"] == expected
