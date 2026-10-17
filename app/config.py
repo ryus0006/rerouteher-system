@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # OpenAI-compatible API). Switching needs only this env var and a restart.
     llm_provider: str = "gemini"
     edgemode_api_key: str = ""
-    edgemode_model: str = "qwen3-235b"
+    edgemode_model: str = "qwen3.8-27b"
     edgemode_base_url: str = "https://api.console.edgemode.ai/v1"
     edgemode_timeout_s: float = 30.0
 
