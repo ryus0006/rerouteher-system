@@ -22,6 +22,13 @@ _DEFAULT_PERSONAL = {
     "location": "",
 }
 
+# Output limits. The prompts state them and the validators enforce them, from these
+# same values, so the model is told every rule its answer is checked against.
+_MAX_SUMMARY_CHARS = 800
+_MAX_BULLET_CHARS = 400
+_MAX_DRAFT_BULLETS = 4
+_MAX_IMPROVE_BULLETS = 6
+
 _BANNED_OUTPUT_TERMS = (
     "caregiv",
     "motherhood",
@@ -67,6 +74,10 @@ class CvImproveResult:
     suggestion: str
     evidence: str
 
+
+_FIRST_PERSON_RE = re.compile(r"\b(i|me|my|we|our)\b", re.IGNORECASE)
+_FIRST_PERSON_LIST = "the words I, me, my, we or our"
+_BANNED_LIST = "any word containing " + ", ".join(f"'{t}'" for t in _BANNED_OUTPUT_TERMS)
 
 _DRAFT_TOOL = {
     "function_declarations": [
@@ -149,7 +160,17 @@ _DRAFT_SYSTEM_PROMPT = (
     "Do not use first-person language. Do not invent employers, dates, achievements, "
     "metrics, responsibilities, qualifications, or skills. Do not mention caregiving, "
     "motherhood, family, childcare, a career break, or other protected personal context. "
-    "Every experience bullet must include its source index and an exact evidence excerpt."
+    "Every experience bullet must include its source index and an exact evidence excerpt.\n"
+    "Limits (a response that breaks any of these is rejected):\n"
+    f"- Summary: one to three sentences, at most {_MAX_SUMMARY_CHARS} characters.\n"
+    "- Skills: only labels from the supplied skills list, copied exactly, each at most once.\n"
+    "- Experiences: at most one entry per supplied experience. source_index is that "
+    "experience's position in the supplied experiences list, counting from 0.\n"
+    f"- Bullets: 1 to {_MAX_DRAFT_BULLETS} per experience, each a single line of at most "
+    f"{_MAX_BULLET_CHARS} characters.\n"
+    "- Evidence: for each bullet, copy a phrase character for character from that "
+    "experience's title, organisation, dates or description.\n"
+    f"- Words: never use {_FIRST_PERSON_LIST}, and never use {_BANNED_LIST}."
 )
 
 _IMPROVE_SYSTEM_PROMPT = (
@@ -160,11 +181,21 @@ _IMPROVE_SYSTEM_PROMPT = (
     "experience; never present the target role as a job title she already holds, and refer "
     "to it only as the role she is aiming for. When improving an experience, rewrite every "
     "bullet in the supplied text and keep all of them: return the full set of bullets as the "
-    "suggestion, one bullet per line, each line starting with '- ', and never drop, merge, or "
-    "omit a bullet. Do not use "
+    "suggestion, one bullet per line, each line starting with '- ', and never drop or omit "
+    "a point. Do not use "
     "first-person language or mention caregiving, motherhood, family, childcare, a career "
     "break, or other protected personal context. Include the exact source excerpt that "
-    "supports the suggestion."
+    "supports the suggestion.\n"
+    "Limits (a response that breaks any of these is rejected):\n"
+    f"- Summary suggestion: at most {_MAX_SUMMARY_CHARS} characters.\n"
+    f"- Experience suggestion: at most {_MAX_IMPROVE_BULLETS} bullets, one per line, each "
+    f"starting with '- ' and at most {_MAX_BULLET_CHARS} characters. If the supplied text "
+    f"has more than {_MAX_IMPROVE_BULLETS} bullets, combine the closest ones so every point "
+    "is kept within the limit.\n"
+    "- Evidence for an experience: copy a phrase character for character from that "
+    "experience's title, organisation, dates or description, or from the current text you "
+    "are improving.\n"
+    f"- Words: never use {_FIRST_PERSON_LIST}, and never use {_BANNED_LIST}."
 )
 
 # The career-break section is the one place caregiving context is allowed, because the
@@ -178,7 +209,11 @@ _IMPROVE_BREAK_SYSTEM_PROMPT = (
     "this section is about. Do NOT invent employers, job titles, dates, metrics, "
     "achievements, certifications, or any activity that is not already in the supplied "
     "bullets. Do not add skills. Do not use first-person language. The evidence field may "
-    "be left empty for this section."
+    "be left empty for this section.\n"
+    "Limits (a response that breaks any of these is rejected):\n"
+    f"- At most {_MAX_IMPROVE_BULLETS} bullets, one per line, each starting with '- ' and at "
+    f"most {_MAX_BULLET_CHARS} characters.\n"
+    f"- Words: never use {_FIRST_PERSON_LIST}."
 )
 
 
@@ -569,11 +604,11 @@ def _validate_summary(value: Any) -> str:
     summary = _safe_text(value)
     if not summary:
         raise CvGenerationError("invalid_cv_content", "summary empty")
-    if len(summary) > 800:
+    if len(summary) > _MAX_SUMMARY_CHARS:
         raise CvGenerationError("invalid_cv_content", "summary too long")
     if _contains_banned_term(summary):
         raise CvGenerationError("invalid_cv_content", "summary has banned term")
-    if re.search(r"\b(i|me|my|we|our)\b", summary, re.IGNORECASE):
+    if _FIRST_PERSON_RE.search(summary):
         raise CvGenerationError("invalid_cv_content", "summary has first-person pronoun")
     return summary
 
@@ -582,13 +617,13 @@ def _validate_bullet(value: Any) -> str:
     text = _safe_text(value)
     if not text:
         raise CvGenerationError("invalid_cv_content", "bullet empty")
-    if len(text) > 400:
+    if len(text) > _MAX_BULLET_CHARS:
         raise CvGenerationError("invalid_cv_content", "bullet too long")
     if "\n" in text:
         raise CvGenerationError("invalid_cv_content", "bullet has newline")
     if _contains_banned_term(text):
         raise CvGenerationError("invalid_cv_content", "bullet has banned term")
-    if re.search(r"\b(i|me|my|we|our)\b", text, re.IGNORECASE):
+    if _FIRST_PERSON_RE.search(text):
         raise CvGenerationError("invalid_cv_content", "bullet has first-person pronoun")
     return text
 
@@ -604,7 +639,7 @@ def _validate_improved_experience(value: Any) -> str:
     ]
     if not bullets:
         raise CvGenerationError("invalid_cv_content", "suggestion empty")
-    if len(bullets) > 6:
+    if len(bullets) > _MAX_IMPROVE_BULLETS:
         raise CvGenerationError("invalid_cv_content", "too many bullets")
     return "\n".join(f"- {_validate_bullet(bullet)}" for bullet in bullets)
 
@@ -615,11 +650,11 @@ def _validate_break_bullet(value: Any) -> str:
     text = _safe_text(value)
     if not text:
         raise CvGenerationError("invalid_cv_content", "bullet empty")
-    if len(text) > 400:
+    if len(text) > _MAX_BULLET_CHARS:
         raise CvGenerationError("invalid_cv_content", "bullet too long")
     if "\n" in text:
         raise CvGenerationError("invalid_cv_content", "bullet has newline")
-    if re.search(r"\b(i|me|my|we|our)\b", text, re.IGNORECASE):
+    if _FIRST_PERSON_RE.search(text):
         raise CvGenerationError("invalid_cv_content", "bullet has first-person pronoun")
     return text
 
@@ -633,9 +668,27 @@ def _validate_improved_break(value: Any) -> str:
     ]
     if not bullets:
         raise CvGenerationError("invalid_cv_content", "suggestion empty")
-    if len(bullets) > 6:
+    if len(bullets) > _MAX_IMPROVE_BULLETS:
         raise CvGenerationError("invalid_cv_content", "too many bullets")
     return "\n".join(f"- {_validate_break_bullet(bullet)}" for bullet in bullets)
+
+
+_QUOTE_MAP = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                            "\u2013": "-", "\u2014": "-"})
+
+
+def _normalise_evidence(text: str) -> str:
+    """Lowercase, straight quotes and dashes, single spaces, no bullet marker or trailing
+    punctuation, so a correctly quoted excerpt is not rejected over formatting."""
+    text = (text or "").translate(_QUOTE_MAP).casefold()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"^[-*\u2022]\s*", "", text)
+    return text.rstrip(" .,;:")
+
+
+def _evidence_in(evidence: str, source_text: str) -> bool:
+    needle = _normalise_evidence(evidence)
+    return bool(needle) and needle in _normalise_evidence(source_text)
 
 
 def _source_text(source: dict[str, str]) -> str:
@@ -683,7 +736,7 @@ def _normalise_draft(
         raw_bullets = item.get("bullets")
         if not isinstance(raw_bullets, list):
             raise CvGenerationError("invalid_cv_content", "bullets not a list")
-        if len(raw_bullets) > 4:
+        if len(raw_bullets) > _MAX_DRAFT_BULLETS:
             raise CvGenerationError("invalid_cv_content", "too many bullets")
 
         source = experiences[index]
@@ -696,7 +749,7 @@ def _normalise_draft(
             evidence = _safe_text(raw_bullet.get("evidence"))
             if not evidence:
                 raise CvGenerationError("invalid_cv_content", "bullet evidence empty")
-            if evidence not in source_text:
+            if not _evidence_in(evidence, source_text):
                 raise CvGenerationError("invalid_cv_content", "bullet evidence not an exact source excerpt")
             bullets.append(text)
         bullets_by_index[index] = bullets
@@ -772,10 +825,54 @@ def _prompt_for_improvement(
     ]
 
 
+# Attempts per CV request. A rejected answer is retried with the reason, so a slip on one
+# limit is corrected instead of reaching her as an error.
+_MAX_ATTEMPTS = 3
+
+
 class CvGenerationService:
     def __init__(self, llm: Any, repo=None) -> None:
         self._llm = llm
         self._repo = repo or accounts_repo
+
+    async def _call_until_valid(
+        self,
+        *,
+        system: str,
+        contents: list[dict[str, Any]],
+        tool: dict[str, Any],
+        name: str,
+        validate,
+        label: str,
+    ):
+        """Call the model and validate its one tool call, retrying a rejected answer with the
+        reason up to _MAX_ATTEMPTS times. Raises the last rejection if none passes."""
+        attempt_contents = list(contents)
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            result = await self._llm.generate(
+                system_instruction=system, contents=attempt_contents, tools=[tool]
+            )
+            try:
+                return validate(_one_tool_args(result, name))
+            except CvGenerationError as exc:
+                if exc.code != "invalid_cv_content" or attempt == _MAX_ATTEMPTS:
+                    raise
+                logger.info("%s retry: attempt=%d reason=%s", label, attempt, exc.message)
+                attempt_contents = list(contents) + [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": (
+                                    f"Your previous {name} call was rejected: {exc.message}. "
+                                    f"Call {name} once more and follow every limit in your "
+                                    "instructions."
+                                )
+                            }
+                        ],
+                    }
+                ]
+        raise AssertionError("unreachable")
 
     async def generate(
         self,
@@ -803,18 +900,19 @@ class CvGenerationService:
             )
 
         try:
-            result = await self._llm.generate(
-                system_instruction=_DRAFT_SYSTEM_PROMPT,
+            draft = await self._call_until_valid(
+                system=_DRAFT_SYSTEM_PROMPT,
                 contents=_prompt_for_draft(context),
-                tools=[_DRAFT_TOOL],
-            )
-            args = _one_tool_args(result, "submit_cv_draft")
-            draft = _normalise_draft(
-                args,
-                role=role,
-                experiences=experiences,
-                allowed_skills=skills,
-                personal=_personal_fields(plan, role["role_id"]),
+                tool=_DRAFT_TOOL,
+                name="submit_cv_draft",
+                validate=lambda args: _normalise_draft(
+                    args,
+                    role=role,
+                    experiences=experiences,
+                    allowed_skills=skills,
+                    personal=_personal_fields(plan, role["role_id"]),
+                ),
+                label="cv generation",
             )
         except CvGenerationError as exc:
             logger.warning(
@@ -912,8 +1010,36 @@ class CvGenerationService:
             )
 
         try:
-            result = await self._llm.generate(
-                system_instruction=(
+            grounding = [_source_text(source) for source in evidence_sources] + [
+                current_text,
+                _redact_text(current_text),
+            ]
+
+            def validate(args: dict[str, Any]) -> tuple[str, str]:
+                if section == "experience":
+                    suggestion = _validate_improved_experience(args.get("suggestion"))
+                elif section == "careerBreak":
+                    suggestion = _validate_improved_break(args.get("suggestion"))
+                else:
+                    suggestion = _validate_summary(args.get("suggestion"))
+                evidence = _safe_text(args.get("evidence"))
+                # Only an experience rewrite must quote an excerpt; a summary synthesises
+                # across the journey, as in draft generation. The excerpt may come from the
+                # experience record or from the CV text being improved: both are her own
+                # content (the checked draft or her edits), and a role saved without a
+                # description has nothing else to quote.
+                if section == "experience" and (
+                    not evidence
+                    or not any(_evidence_in(evidence, text) for text in grounding)
+                ):
+                    raise CvGenerationError(
+                        "invalid_cv_content",
+                        "evidence is not copied from the experience or its current text",
+                    )
+                return suggestion, evidence
+
+            suggestion, evidence = await self._call_until_valid(
+                system=(
                     _IMPROVE_BREAK_SYSTEM_PROMPT
                     if section == "careerBreak"
                     else _IMPROVE_SYSTEM_PROMPT
@@ -925,23 +1051,11 @@ class CvGenerationService:
                     current_text=current_text,
                     previous_suggestions=previous_suggestions or [],
                 ),
-                tools=[_IMPROVE_TOOL],
+                tool=_IMPROVE_TOOL,
+                name="submit_cv_improvement",
+                validate=validate,
+                label="cv refinement",
             )
-            args = _one_tool_args(result, "submit_cv_improvement")
-            if section == "experience":
-                suggestion = _validate_improved_experience(args.get("suggestion"))
-            elif section == "careerBreak":
-                suggestion = _validate_improved_break(args.get("suggestion"))
-            else:
-                suggestion = _validate_summary(args.get("suggestion"))
-            evidence = _safe_text(args.get("evidence"))
-            # Only an experience rewrite must quote an exact source excerpt; a summary
-            # synthesises across the journey, as in draft generation.
-            if section == "experience" and (
-                not evidence
-                or not any(evidence in _source_text(source) for source in evidence_sources)
-            ):
-                raise CvGenerationError("invalid_cv_content", "improve evidence not an exact source excerpt")
         except CvGenerationError as exc:
             logger.warning(
                 "cv refinement rejected: user=%s role_id=%s section=%s code=%s reason=%s",

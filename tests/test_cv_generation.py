@@ -398,3 +398,109 @@ async def test_missing_substantive_source_is_prerequisite_error(repo):
         await CvGenerationService(FakeLlm(result=_function_result())).generate(object(), "aisha")
 
     assert exc_info.value.code == "journey_prerequisite_incomplete"
+
+
+class SequenceLlm:
+    """Returns the queued results in order, one per generate() call."""
+
+    model = "fake-gemini"
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.results.pop(0)
+
+
+def _draft_with_bullets(n):
+    result = _function_result()
+    bullet = result.content["parts"][0]["functionCall"]["args"]["experiences"][0]["bullets"][0]
+    result.content["parts"][0]["functionCall"]["args"]["experiences"][0]["bullets"] = [dict(bullet) for _ in range(n)]
+    return result
+
+
+async def test_prompts_state_every_limit():
+    draft = cv_generation_mod._DRAFT_SYSTEM_PROMPT
+    improve = cv_generation_mod._IMPROVE_SYSTEM_PROMPT
+    brk = cv_generation_mod._IMPROVE_BREAK_SYSTEM_PROMPT
+    assert "at most 800 characters" in draft and "1 to 4 per experience" in draft
+    assert "at most 400 characters" in draft and "counting from 0" in draft
+    assert "'stay-at-home'" in draft and "I, me, my, we or our" in draft
+    assert "at most 6 bullets" in improve and "at most 400 characters" in improve
+    assert "at most 6 bullets" in brk.lower()
+
+
+async def test_rejected_draft_is_retried_with_the_reason(repo):
+    llm = SequenceLlm([_draft_with_bullets(6), _function_result()])
+    result = await CvGenerationService(llm).generate(object(), "aisha", regenerate=True)
+    assert result.status == "generated" and len(llm.calls) == 2
+    feedback = llm.calls[1]["contents"][-1]["parts"][0]["text"]
+    assert "rejected: too many bullets" in feedback
+    assert len(repo.writes) == 1
+
+
+async def test_draft_gives_up_after_three_rejections(repo):
+    llm = SequenceLlm([_draft_with_bullets(6)] * 3)
+    with pytest.raises(CvGenerationError) as exc_info:
+        await CvGenerationService(llm).generate(object(), "aisha", regenerate=True)
+    assert exc_info.value.code == "invalid_cv_content" and len(llm.calls) == 3
+    assert repo.writes == []
+
+
+async def test_evidence_match_ignores_formatting_only():
+    source = "Coordinated delivery across teams and maintained project schedules."
+    assert cv_generation_mod._evidence_in("coordinated  delivery across teams", source)
+    assert cv_generation_mod._evidence_in("- Maintained project schedules.", source)
+    assert cv_generation_mod._evidence_in("maintained 'project' schedules", "Maintained \u2018project\u2019 schedules")
+    assert not cv_generation_mod._evidence_in("Led a team of ten", source)
+    assert not cv_generation_mod._evidence_in("   ", source)
+
+
+async def test_improve_retries_bad_evidence_then_succeeds(repo):
+    bad = _improve_result()
+    bad.content["parts"][0]["functionCall"]["args"]["evidence"] = "Managed a budget of RM1m"
+    llm = SequenceLlm([bad, _improve_result()])
+    result = await CvGenerationService(llm).improve(
+        object(),
+        "aisha",
+        role_id="role-project",
+        section="experience",
+        experience_index=0,
+        current_text="- Coordinated delivery across teams and maintained project schedules.",
+    )
+    assert result.suggestion.startswith("- Coordinated") and len(llm.calls) == 2
+
+
+async def test_improve_accepts_evidence_from_the_current_text(repo):
+    # A role saved without a description: the only thing to quote is the CV text itself.
+    repo.plans["aisha"]["cv"]["experiences"][0]["description"] = ""
+    result = _improve_result()
+    result.content["parts"][0]["functionCall"]["args"]["evidence"] = "Kept delivery schedules on track"
+    llm = SequenceLlm([result])
+    out = await CvGenerationService(llm).improve(
+        object(),
+        "aisha",
+        role_id="role-project",
+        section="experience",
+        experience_index=0,
+        current_text="- Kept delivery schedules on track for three teams.",
+    )
+    assert out.evidence == "Kept delivery schedules on track" and len(llm.calls) == 1
+
+
+async def test_improve_still_rejects_evidence_found_nowhere(repo):
+    bad = _improve_result()
+    bad.content["parts"][0]["functionCall"]["args"]["evidence"] = "Managed a budget of RM1m"
+    llm = SequenceLlm([bad] * 3)
+    with pytest.raises(CvGenerationError):
+        await CvGenerationService(llm).improve(
+            object(),
+            "aisha",
+            role_id="role-project",
+            section="experience",
+            experience_index=0,
+            current_text="- Coordinated delivery across teams.",
+        )
+    assert len(llm.calls) == 3
