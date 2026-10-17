@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_timeout_s: float = 30.0
 
+    # Which LLM serves every feature: "gemini" (default) or "edgemode" (an
+    # OpenAI-compatible API). Switching needs only this env var and a restart.
+    llm_provider: str = "gemini"
+    edgemode_api_key: str = ""
+    edgemode_model: str = "qwen3-235b"
+    edgemode_base_url: str = "https://api.console.edgemode.ai/v1"
+    edgemode_timeout_s: float = 30.0
+
     # E6 on-demand learning fill (Tavily search + Gemini picks one free resource).
     learning_fill_enabled: bool = True
     learning_fill_url_timeout_s: float = 6.0
@@ -112,6 +120,8 @@ class Settings(BaseSettings):
 
     @property
     def llm_configured(self) -> bool:
+        if self.llm_provider.strip().lower() == "edgemode":
+            return bool(self.edgemode_api_key)
         return bool(self.gemini_api_keys)
 
     @property

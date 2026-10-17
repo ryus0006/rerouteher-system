@@ -7,10 +7,16 @@ limit, or any other HTTP error), it falls back to the next configured key and
 remembers the key that worked for later requests. When every key fails on the
 main model (e.g. a 503 "model overloaded"), it tries each fallback model in turn
 with the same keys. The model that worked is remembered too: later calls start on
-it for a cooldown, then the main model is tried again."""
+it for a cooldown, then the main model is tried again.
+
+EdgemodeClient is the alternative provider (OpenAI-compatible chat completions).
+It takes and returns the same Gemini-shaped contents and tools, converting at the
+edge, so the services work unchanged whichever provider LLM_PROVIDER selects."""
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -187,3 +193,166 @@ class GeminiClient:
             ), ""
 
         return None, last_error
+
+
+# Qwen3 can emit its reasoning inline; it is never part of the answer.
+_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _to_openai_tools(tools: list[dict] | None) -> list[dict]:
+    """Gemini [{"function_declarations": [...]}] -> OpenAI [{"type": "function", ...}].
+    The declarations already use JSON-schema parameters, so they pass through."""
+    return [
+        {"type": "function", "function": decl}
+        for tool in tools or []
+        for decl in tool.get("function_declarations") or []
+    ]
+
+
+def _to_openai_messages(system_instruction: str, contents: list[dict]) -> list[dict]:
+    """Gemini contents -> OpenAI messages. Gemini tool calls carry no id, so each
+    call gets one here and the following functionResponse is paired with the
+    earliest unanswered call of the same name."""
+    messages: list[dict] = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    pending: list[tuple[str, str]] = []  # (tool name, call id) still awaiting a response
+    n = 0
+    for turn in contents:
+        parts = turn.get("parts") or []
+        text = "".join(p["text"] for p in parts if isinstance(p.get("text"), str))
+        if turn.get("role") == "model":
+            msg: dict = {"role": "assistant", "content": text}
+            calls = [p["functionCall"] for p in parts if "functionCall" in p]
+            if calls:
+                msg["content"] = text or None
+                msg["tool_calls"] = []
+                for call in calls:
+                    n += 1
+                    call_id = f"call_{n}"
+                    name = call.get("name", "")
+                    pending.append((name, call_id))
+                    msg["tool_calls"].append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(call.get("args") or {})},
+                        }
+                    )
+            messages.append(msg)
+            continue
+        for p in parts:
+            resp = p.get("functionResponse")
+            if resp is None:
+                continue
+            name = resp.get("name", "")
+            match = next((i for i, (pname, _) in enumerate(pending) if pname == name), 0)
+            if pending:
+                call_id = pending.pop(match)[1]
+            else:
+                n += 1
+                call_id = f"call_{n}"
+            messages.append(
+                {"role": "tool", "tool_call_id": call_id, "content": json.dumps(resp.get("response"))}
+            )
+        if text:
+            messages.append({"role": "user", "content": text})
+    return messages
+
+
+def _to_gemini_content(message: dict) -> dict:
+    """OpenAI assistant message -> Gemini content (text part + functionCall parts)."""
+    parts: list[dict] = []
+    text = _THINK_BLOCK.sub("", message.get("content") or "").strip()
+    if text:
+        parts.append({"text": text})
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        raw = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError as exc:
+            raise LlmError(f"tool call {fn.get('name')!r} arguments are not valid JSON") from exc
+        parts.append({"functionCall": {"name": fn.get("name", ""), "args": args or {}}})
+    return {"role": "model", "parts": parts}
+
+
+class EdgemodeClient:
+    """Edgemode over its OpenAI-compatible API, with GeminiClient's interface."""
+
+    def __init__(self, api_key: str, model: str, base_url: str, timeout_s: float) -> None:
+        if not api_key:
+            raise ValueError("EdgemodeClient needs an API key")
+        self._api_key = api_key
+        self.model = model
+        self._base_url = base_url.rstrip("/")
+        self._timeout_s = timeout_s
+
+    @classmethod
+    def from_settings(cls, settings) -> "EdgemodeClient | None":
+        if not settings.edgemode_api_key:
+            logger.warning("EDGEMODE_API_KEY not set; companion LLM disabled")
+            return None
+        return cls(
+            settings.edgemode_api_key,
+            settings.edgemode_model,
+            settings.edgemode_base_url,
+            settings.edgemode_timeout_s,
+        )
+
+    async def generate(
+        self, *, system_instruction: str, contents: list[dict], tools: list[dict] | None
+    ) -> GenerateResult:
+        body: dict = {"model": self.model, "messages": _to_openai_messages(system_instruction, contents)}
+        openai_tools = _to_openai_tools(tools)
+        if openai_tools:
+            body["tools"] = openai_tools
+        url = f"{self._base_url}/chat/completions"
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+                resp = await client.post(
+                    url, json=body, headers={"Authorization": f"Bearer {self._api_key}"}
+                )
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+            logger.warning("edgemode call failed (%s) url=%s timeout=%ss", error, url, self._timeout_s)
+            raise LlmError(f"edgemode call failed: {error}") from exc
+
+        if resp.status_code >= 400:
+            logger.warning("edgemode returned %d", resp.status_code)
+            raise LlmError(f"edgemode call failed: http {resp.status_code}")
+
+        try:
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            raise LlmError(str(exc)) from exc
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise LlmError("no choices in Edgemode response")
+        usage = data.get("usage") or {}
+        prompt = int(usage.get("prompt_tokens") or 0)
+        # completion_tokens already includes any reasoning tokens.
+        completion = int(usage.get("completion_tokens") or 0)
+        if not completion and usage.get("total_tokens"):
+            completion = int(usage["total_tokens"]) - prompt
+        return GenerateResult(
+            content=_to_gemini_content(choices[0].get("message") or {}),
+            tokens_in=prompt,
+            tokens_out=max(completion, 0),
+            model=self.model,
+        )
+
+
+def create_llm_client(settings) -> "GeminiClient | EdgemodeClient | None":
+    """The client for settings.llm_provider, or None when its key is unset."""
+    provider = settings.llm_provider.strip().lower()
+    if provider == "gemini":
+        client = GeminiClient.from_settings(settings)
+    elif provider == "edgemode":
+        client = EdgemodeClient.from_settings(settings)
+    else:
+        raise ValueError(f"unknown LLM_PROVIDER {settings.llm_provider!r}; use 'gemini' or 'edgemode'")
+    if client is not None:
+        logger.info("LLM provider: %s (%s)", provider, client.model)
+    return client
