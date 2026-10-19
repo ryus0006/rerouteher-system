@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Experience(BaseModel):
@@ -40,11 +40,20 @@ class CvImproveRequest(BaseModel):
     role_id: str = Field(alias="roleId", min_length=1)
     section: Literal["summary", "experience", "careerBreak"]
     experience_index: int | None = Field(default=None, alias="experienceIndex", ge=0)
-    current_text: str = Field(default="", alias="currentText")
+    # Bounded so one request cannot make the model (and its up-to-3 retries) read an
+    # oversized prompt. 4000 covers the largest valid section (6 bullets of 400 chars).
+    current_text: str = Field(default="", alias="currentText", max_length=4000)
     previous_suggestions: list[str] = Field(
         default_factory=list,
         alias="previousSuggestions",
     )
+
+    @field_validator("previous_suggestions")
+    @classmethod
+    def _recent_suggestions(cls, value: list[str]) -> list[str]:
+        # The UI appends every earlier suggestion, so trim rather than reject: keep the
+        # five most recent, each capped like current_text.
+        return [item[:4000] for item in value[-5:]]
 
 
 class CvPersonal(BaseModel):
