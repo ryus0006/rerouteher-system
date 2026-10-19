@@ -201,7 +201,9 @@ def test_improve_request_bounds_its_text_inputs():
     from app.schemas.cv import CvImproveRequest
 
     req = CvImproveRequest(roleId="r", section="summary", currentText="x",
-                           previousSuggestions=[str(i) for i in range(8)] + ["y" * 5000])
-    assert req.previous_suggestions[:4] == ["4", "5", "6", "7"] and len(req.previous_suggestions[-1]) == 4000
+                           previousSuggestions=[str(i) for i in range(9)])
+    assert req.previous_suggestions == ["4", "5", "6", "7", "8"]
     with pytest.raises(ValidationError):
         CvImproveRequest(roleId="r", section="summary", currentText="x" * 4001)
+    with pytest.raises(ValidationError):  # oversized items are rejected, never sliced
+        CvImproveRequest(roleId="r", section="summary", previousSuggestions=["y" * 4001])

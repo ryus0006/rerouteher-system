@@ -1,6 +1,6 @@
 """Schemas for CV parsing, refreshed-CV generation, and wording refinement."""
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -43,7 +43,9 @@ class CvImproveRequest(BaseModel):
     # Bounded so one request cannot make the model (and its up-to-3 retries) read an
     # oversized prompt. 4000 covers the largest valid section (6 bullets of 400 chars).
     current_text: str = Field(default="", alias="currentText", max_length=4000)
-    previous_suggestions: list[str] = Field(
+    # Each item is length-checked, not sliced: cutting text before PII redaction could
+    # split an email or phone number so the redaction no longer recognises it.
+    previous_suggestions: list[Annotated[str, Field(max_length=4000)]] = Field(
         default_factory=list,
         alias="previousSuggestions",
     )
@@ -51,9 +53,9 @@ class CvImproveRequest(BaseModel):
     @field_validator("previous_suggestions")
     @classmethod
     def _recent_suggestions(cls, value: list[str]) -> list[str]:
-        # The UI appends every earlier suggestion, so trim rather than reject: keep the
-        # five most recent, each capped like current_text.
-        return [item[:4000] for item in value[-5:]]
+        # The UI appends every earlier suggestion, so keep the five most recent rather
+        # than reject a long list.
+        return value[-5:]
 
 
 class CvPersonal(BaseModel):
