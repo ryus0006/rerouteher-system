@@ -961,3 +961,14 @@ async def test_invalid_profile_args_log_has_no_profile_text(caplog):
         await svc.ask(AskRequest(question="hi", session_id="s1"), session=object(), username=None)
     line = next(r.getMessage() for r in caplog.records if "args invalid" in r.getMessage())
     assert "cv:model_type" in line and "Maju" not in line
+
+
+
+async def test_auto_verify_follows_the_answering_provider():
+    # On Edgemode the verify pass runs even after Hera saved; on Gemini it is skipped.
+    for provider, expected_calls in [("edgemode", 3), ("gemini", 2)]:
+        llm = ScriptedLlm([_fn("update_profile", _BREAK_ARGS), _text("Saved."), _text("OK")])
+        llm.provider = provider
+        svc = CompanionService(llm=llm, repo=FakeRepo(), verify_mode="auto")
+        await svc.ask(AskRequest(question="3 years off", session_id="s1"), session=object(), username=None)
+        assert len(llm.calls) == expected_calls, provider

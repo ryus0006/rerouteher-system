@@ -6,6 +6,7 @@ import pytest
 from app.config import Settings
 from app.services.llm import (
     EdgemodeClient,
+    FallbackLlmClient,
     GeminiClient,
     LlmError,
     _to_gemini_content,
@@ -25,8 +26,25 @@ TOOLS = [
 
 
 def test_create_llm_client_defaults_to_gemini():
-    client = create_llm_client(Settings(gemini_api_key="g", edgemode_api_key="e"))
+    client = create_llm_client(Settings(gemini_api_key="g", edgemode_api_key="e", llm_fallback_provider="none"))
     assert isinstance(client, GeminiClient)
+
+
+def test_create_llm_client_wraps_the_other_provider_as_fallback():
+    client = create_llm_client(Settings(gemini_api_key="g", edgemode_api_key="e"))
+    assert isinstance(client, FallbackLlmClient) and client.provider == "gemini"
+    client = create_llm_client(Settings(llm_provider="edgemode", gemini_api_key="g", edgemode_api_key="e"))
+    assert isinstance(client, FallbackLlmClient) and client.provider == "edgemode"
+
+
+def test_create_llm_client_skips_fallback_without_its_key():
+    client = create_llm_client(Settings(llm_provider="edgemode", edgemode_api_key="e", gemini_api_key=""))
+    assert isinstance(client, EdgemodeClient)
+
+
+def test_create_llm_client_rejects_unknown_fallback():
+    with pytest.raises(ValueError):
+        create_llm_client(Settings(gemini_api_key="g", edgemode_api_key="e", llm_fallback_provider="groq"))
 
 
 def test_create_llm_client_builds_edgemode():
@@ -247,3 +265,50 @@ def test_nested_object_sent_as_a_json_string_is_decoded():
     args = content["parts"][0]["functionCall"]["args"]
     assert args["cv"] == {"raw_text": "x", "experiences": []}
     assert args["note"] == "{not json" and args["n"] == "{}x"  # left alone when not valid JSON
+
+
+
+class _StubClient:
+    def __init__(self, provider, fail=False):
+        self.provider, self.model, self.fail, self.calls = provider, f"{provider}-model", fail, 0
+
+    async def generate(self, **kwargs):
+        self.calls += 1
+        if self.fail:
+            raise LlmError(f"{self.provider} down")
+        from app.services.llm import GenerateResult
+        return GenerateResult(content={"role": "model", "parts": [{"text": self.provider}]}, model=self.model)
+
+
+async def _ask(client):
+    return (await client.generate(system_instruction="s", contents=[], tools=None)).content["parts"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_uses_primary_when_it_works():
+    primary, secondary = _StubClient("edgemode"), _StubClient("gemini")
+    client = FallbackLlmClient(primary, secondary)
+    assert await _ask(client) == "edgemode" and secondary.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_fallback_switches_and_stays_for_the_cooldown(monkeypatch):
+    import app.services.llm as llm_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: now[0])
+    primary, secondary = _StubClient("edgemode", fail=True), _StubClient("gemini")
+    client = FallbackLlmClient(primary, secondary, cooldown_s=600)
+    assert await _ask(client) == "gemini" and client.provider == "gemini" and client.model == "gemini-model"
+    assert await _ask(client) == "gemini" and primary.calls == 1  # down provider not re-checked
+    now[0] += 601
+    primary.fail = False
+    assert await _ask(client) == "edgemode" and client.provider == "edgemode"
+
+
+@pytest.mark.asyncio
+async def test_fallback_raises_when_both_fail():
+    client = FallbackLlmClient(_StubClient("edgemode", fail=True), _StubClient("gemini", fail=True))
+    with pytest.raises(LlmError) as exc_info:
+        await _ask(client)
+    assert "edgemode: edgemode down" in str(exc_info.value) and "gemini: gemini down" in str(exc_info.value)

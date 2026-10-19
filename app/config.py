@@ -69,12 +69,18 @@ class Settings(BaseSettings):
     edgemode_model: str = "qwen3.8-27b"
     edgemode_base_url: str = "https://token-api.korika.ai.id/v1"
     edgemode_timeout_s: float = 30.0
+    # When the main provider fails, the other one answers: "auto" (the other provider,
+    # if its key is set), "none", "gemini" or "edgemode". The provider that answered is
+    # kept for the cooldown before the main one is tried again.
+    llm_fallback_provider: str = "auto"
+    llm_fallback_cooldown_s: float = 600.0
 
     # Companion profile verify pass after each build turn, so a detail she gives is saved
-    # even when the model does not call update_profile: "always", "missed" (only when the
-    # model did not save that turn) or "off". "missed" suits Gemini, which saves reliably
-    # (it avoids an extra free-tier call per turn); use "always" with Edgemode/Qwen.
-    companion_verify_mode: str = "missed"
+    # even when the model does not call update_profile: "auto", "always", "missed" (only
+    # when the model did not save that turn) or "off". "auto" follows the provider that is
+    # answering: "missed" on Gemini, which saves reliably, "always" on Edgemode/Qwen, which
+    # often skips the save (this also covers a provider fallback mid-session).
+    companion_verify_mode: str = "auto"
 
     # E6 on-demand learning fill (Tavily search + Gemini picks one free resource).
     learning_fill_enabled: bool = True

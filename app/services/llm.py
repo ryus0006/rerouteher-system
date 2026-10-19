@@ -62,6 +62,8 @@ def _log_call(provider: str, started: float, result: GenerateResult, tools: list
 
 
 class GeminiClient:
+    provider = "gemini"
+
     def __init__(
         self,
         api_keys: list[str],
@@ -329,6 +331,8 @@ def _to_gemini_content(message: dict) -> dict:
 class EdgemodeClient:
     """Edgemode over its OpenAI-compatible API, with GeminiClient's interface."""
 
+    provider = "edgemode"
+
     def __init__(self, api_key: str, model: str, base_url: str, timeout_s: float) -> None:
         if not api_key:
             raise ValueError("EdgemodeClient needs an API key")
@@ -359,7 +363,10 @@ class EdgemodeClient:
         url = f"{self._base_url}/chat/completions"
         started = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            # A short connect timeout so a host that is down fails in seconds, letting the
+            # provider fallback take over instead of waiting the full read timeout.
+            timeout = httpx.Timeout(self._timeout_s, connect=min(5.0, self._timeout_s))
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(
                     url, json=body, headers={"Authorization": f"Bearer {self._api_key}"}
                 )
@@ -396,15 +403,92 @@ class EdgemodeClient:
         return result
 
 
-def create_llm_client(settings) -> "GeminiClient | EdgemodeClient | None":
-    """The client for settings.llm_provider, or None when its key is unset."""
+class FallbackLlmClient:
+    """Main provider first, the other provider when it fails. Like the Gemini model
+    fallback, the provider that answered is remembered for a cooldown so a provider
+    that is down is not retried (and waited on) by every call."""
+
+    def __init__(self, primary, secondary, cooldown_s: float = 600.0) -> None:
+        self._clients = [primary, secondary]
+        self._cooldown_s = cooldown_s
+        self._active = 0  # index into _clients; sticky during the cooldown
+        self._retry_primary_at = 0.0
+
+    @property
+    def provider(self) -> str:
+        """The provider currently answering, so callers can adapt (verify mode)."""
+        return self._clients[self._active].provider
+
+    @property
+    def model(self) -> str:
+        return self._clients[self._active].model
+
+    async def generate(
+        self, *, system_instruction: str, contents: list[dict], tools: list[dict] | None
+    ) -> GenerateResult:
+        if self._active and time.monotonic() >= self._retry_primary_at:
+            logger.info("llm fallback cooldown over; trying %s again", self._clients[0].provider)
+            self._active = 0
+        start = self._active
+        errors = []
+        for i in (start, 1 - start):
+            client = self._clients[i]
+            try:
+                result = await client.generate(
+                    system_instruction=system_instruction, contents=contents, tools=tools
+                )
+            except LlmError as exc:
+                errors.append(f"{client.provider}: {exc}")
+                if i == start:
+                    logger.warning(
+                        "llm provider %s failed (%s); falling back to %s",
+                        client.provider,
+                        exc,
+                        self._clients[1 - start].provider,
+                    )
+                continue
+            if i != start:
+                self._active = i
+                if i:  # moved off the main provider: start the cooldown
+                    self._retry_primary_at = time.monotonic() + self._cooldown_s
+                    logger.warning(
+                        "llm now using %s; %s retried in %ss",
+                        client.provider,
+                        self._clients[0].provider,
+                        int(self._cooldown_s),
+                    )
+            return result
+        raise LlmError("all LLM providers failed: " + "; ".join(errors))
+
+
+_CLIENTS = {"gemini": GeminiClient, "edgemode": EdgemodeClient}
+
+
+def create_llm_client(settings) -> "GeminiClient | EdgemodeClient | FallbackLlmClient | None":
+    """The client for settings.llm_provider, wrapped with the other provider as a fallback
+    when LLM_FALLBACK_PROVIDER allows it and that provider has a key. None when the main
+    provider's key is unset."""
     provider = settings.llm_provider.strip().lower()
-    if provider == "gemini":
-        client = GeminiClient.from_settings(settings)
-    elif provider == "edgemode":
-        client = EdgemodeClient.from_settings(settings)
-    else:
+    if provider not in _CLIENTS:
         raise ValueError(f"unknown LLM_PROVIDER {settings.llm_provider!r}; use 'gemini' or 'edgemode'")
-    if client is not None:
-        logger.info("LLM provider: %s (%s)", provider, client.model)
-    return client
+    client = _CLIENTS[provider].from_settings(settings)
+    if client is None:
+        return None
+    logger.info("LLM provider: %s (%s)", provider, client.model)
+
+    fallback = settings.llm_fallback_provider.strip().lower()
+    if fallback == "auto":
+        fallback = "edgemode" if provider == "gemini" else "gemini"
+    if fallback in ("", "none") or fallback == provider:
+        return client
+    if fallback not in _CLIENTS:
+        raise ValueError(
+            f"unknown LLM_FALLBACK_PROVIDER {settings.llm_fallback_provider!r}; "
+            "use 'auto', 'none', 'gemini' or 'edgemode'"
+        )
+    backup = _CLIENTS[fallback].from_settings(settings)
+    if backup is None:
+        logger.info("LLM fallback %s has no key; running without a provider fallback", fallback)
+        return client
+    logger.info("LLM fallback provider: %s (%s)", fallback, backup.model)
+    return FallbackLlmClient(client, backup, settings.llm_fallback_cooldown_s)

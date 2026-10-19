@@ -522,7 +522,7 @@ class CompanionService:
     ) -> None:
         self._llm = llm
         # Profile verify pass after each build turn: "always", "missed" (only when Hera
-        # did not save this turn) or "off".
+        # did not save this turn), "off", or "auto" (always on Edgemode, missed otherwise).
         self._verify_mode = verify_mode
         self._repo = repo
         # anything exposing async resolve_role(title, skill_names, session) -> role|None;
@@ -817,9 +817,12 @@ class CompanionService:
 
     def _should_verify(self, req: AskRequest, tool_results: list[tuple[str, str]]) -> bool:
         # Build mode only (no saved CV or snapshot yet), the same test as _draft_note.
-        if self._verify_mode == "off" or req.journey.snapshot or req.journey.cv is not None:
+        mode = self._verify_mode
+        if mode == "auto":
+            mode = "always" if getattr(self._llm, "provider", "") == "edgemode" else "missed"
+        if mode == "off" or req.journey.snapshot or req.journey.cv is not None:
             return False
-        if self._verify_mode == "missed":
+        if mode == "missed":
             return ("update_profile", "saved") not in tool_results
         return True
 
