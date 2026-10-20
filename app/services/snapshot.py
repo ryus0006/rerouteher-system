@@ -458,7 +458,7 @@ class SnapshotService:
         # The cross-encoder's top pick stays first (it is also the previous occupation);
         # the rest of the similar-role pool is ordered by how many of each role's core
         # skills she already owns.
-        ranked = [ranked_all[0]] + await self._by_owned_share(ranked_all[1:], professional, session)
+        ranked = [ranked_all[0]] + await self._by_owned_count(ranked_all[1:], professional, session)
         ranked = ranked[: self._settings.rerank_top_k]
 
         top = ranked[0]
@@ -479,8 +479,8 @@ class SnapshotService:
         )
         return previous, recommended
 
-    async def _by_owned_share(self, ranked, professional, session):
-        """Order reranked roles by the share of core skills she owns (gap rule), keeping the
+    async def _by_owned_count(self, ranked, professional, session):
+        """Order reranked roles by how many core skills she owns (gap rule), keeping the
         cross-encoder order for ties. Unchanged when she has no skills or the lookup fails."""
         exact_ids = [p.skill_id for p in professional if p.skill_id]
         embed_ids = [p.skill_id for p in professional if p.skill_id and p.source != "role_confirmed"]
@@ -495,14 +495,13 @@ class SnapshotService:
             logger.warning("recommendation coverage lookup failed: %s", type(exc).__name__)
             return list(ranked)
 
-        def share(role_id: str) -> float:
-            owned, core = coverage.get(role_id, (0, 0))
-            return owned / core if core else 0.0
+        def owned(role_id: str) -> int:
+            return coverage.get(role_id, (0, 0))[0]
 
-        ordered = sorted(ranked, key=lambda x: share(x.role_id), reverse=True)  # stable
+        ordered = sorted(ranked, key=lambda x: owned(x.role_id), reverse=True)  # stable
         logger.info(
-            "recommendation owned share: %s",
-            [(x.role_id, round(share(x.role_id), 3)) for x in ordered[:5]],
+            "recommendation owned count: %s",
+            [(x.role_id, f"{owned(x.role_id)}/{coverage.get(x.role_id, (0, 0))[1]}") for x in ordered[:5]],
         )
         return ordered
 

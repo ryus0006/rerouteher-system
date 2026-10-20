@@ -363,22 +363,22 @@ def _skills(*ids):
     return [ProfessionalSkill(skill=i, skill_id=i) for i in ids]
 
 
-async def test_recommendations_after_the_top_pick_follow_owned_share(monkeypatch):
+async def test_recommendations_after_the_top_pick_follow_owned_count(monkeypatch):
     async def coverage(session, role_ids, embed, exact, threshold):
         assert threshold == Settings().gap_cosine_threshold
-        return {"B": (1, 10), "C": (6, 10), "D": (3, 10)}
+        return {"B": (1, 10), "C": (6, 60), "D": (3, 5)}  # count wins over share
 
     monkeypatch.setattr(roles_repo, "core_coverage_for_roles", coverage)
     svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None)
-    ordered = await svc._by_owned_share(_ranked("B", "C", "D"), _skills("s1"), session=object())
+    ordered = await svc._by_owned_count(_ranked("B", "C", "D"), _skills("s1"), session=object())
     assert [x.role_id for x in ordered] == ["C", "D", "B"]
 
 
-async def test_owned_share_keeps_reranker_order_without_skills_or_on_error(monkeypatch):
+async def test_owned_count_keeps_reranker_order_without_skills_or_on_error(monkeypatch):
     async def broken(*a, **k):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(roles_repo, "core_coverage_for_roles", broken)
     svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None)
-    assert [x.role_id for x in await svc._by_owned_share(_ranked("B", "C"), _skills("s1"), object())] == ["B", "C"]
-    assert [x.role_id for x in await svc._by_owned_share(_ranked("B", "C"), [], object())] == ["B", "C"]
+    assert [x.role_id for x in await svc._by_owned_count(_ranked("B", "C"), _skills("s1"), object())] == ["B", "C"]
+    assert [x.role_id for x in await svc._by_owned_count(_ranked("B", "C"), [], object())] == ["B", "C"]
