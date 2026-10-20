@@ -313,6 +313,8 @@ async def test_update_profile_captures_and_filters_priorities():
             "childcare_support",
             "parental_support",
             "returning_to_work",
+            "inclusive_workplace",
+            "flexible_work",
         ],
     }
     llm = ScriptedLlm([_fn("update_profile", args), _text("Saved.")])
@@ -322,11 +324,12 @@ async def test_update_profile_captures_and_filters_priorities():
         session=object(),
         username=None,
     )
-    # invalid id dropped, order preserved, capped at 3
+    # invalid and repeated ids dropped, order preserved, no limit on how many
     assert resp.journey_update.employerPriorities == [
         "flexible_work",
         "childcare_support",
         "parental_support",
+        "inclusive_workplace",
     ]
 
 

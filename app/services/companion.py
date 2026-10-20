@@ -86,9 +86,9 @@ SYSTEM_PROMPT = (
     "negotiation, teaching or tutoring, volunteering) and pass them as break.activities, "
     "so her break counts as real experience.\n"
     "\n"
-    "Part 4, employer priorities: up to three things she most wants from an employer, "
-    "from flexible or remote work, childcare support, parental support, or an inclusive "
-    "workplace, recorded as employerPriorities.\n"
+    "Part 4, employer priorities: the things she most wants from an employer, any of "
+    "flexible or remote work, childcare support, parental support, or an inclusive "
+    "workplace, recorded as employerPriorities. She can pick as many as matter to her.\n"
     "\n"
     "When all parts are filled, tell her the profile is ready: it is shown in the draft "
     "panel beside the chat, and she can look it over and click 'Use this profile' there "
@@ -164,7 +164,6 @@ _VALID_PRIORITY_IDS = [
     "parental_support",
     "inclusive_workplace",
 ]
-_MAX_PRIORITIES = 3
 
 # Fixed career-break activity taxonomy (source of truth = frontend activityTaxonomy.js,
 # == the 12 distinct caregiving_map.activity_id values). The companion maps her free-text
@@ -230,8 +229,8 @@ UPDATE_PROFILE_TOOL = {
                     "employerPriorities": {
                         "type": "array",
                         "description": (
-                            "Up to three things she most wants from an employer, chosen from the "
-                            "fixed list."
+                            "The things she most wants from an employer, chosen from the fixed "
+                            "list. She can pick any number of them."
                         ),
                         "items": {"type": "string", "enum": _VALID_PRIORITY_IDS},
                     },
@@ -457,7 +456,7 @@ VERIFY_PROMPT = (
     "activity to the closest fixed id in the tool.\n"
     "- Messages starting 'I used these in that role:' or 'I used ... in that role.' are "
     "checklist ticks stored separately; do not copy those skills into skill_mentions.\n"
-    "- Map her employer priorities to the fixed ids in the tool, up to three."
+    "- Map her employer priorities to the fixed ids in the tool."
 )
 
 
@@ -803,10 +802,10 @@ class CompanionService:
             )
             return None
         # Defend the fixed pick-list even though the tool enum constrains it:
-        # drop anything unknown, keep order, cap at three.
-        update.employerPriorities = [
-            p for p in update.employerPriorities if p in _VALID_PRIORITY_IDS
-        ][:_MAX_PRIORITIES]
+        # drop anything unknown or repeated, keep order.
+        update.employerPriorities = list(
+            dict.fromkeys(p for p in update.employerPriorities if p in _VALID_PRIORITY_IDS)
+        )
         # Defend the fixed activity taxonomy: keep only ids the CareerBreak
         # page and caregiving_map recognise (so both can render/reframe them).
         if update.break_ is not None:
