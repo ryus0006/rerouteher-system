@@ -177,6 +177,38 @@ async def best_similarity_for_role(
     return {str(r.rid): float(r.best_sim) for r in rows}
 
 
+async def core_coverage_for_roles(
+    session: AsyncSession,
+    role_ids: list[str],
+    embed_skill_ids: list[str],
+    exact_skill_ids: list[str],
+    threshold: float,
+) -> dict[str, tuple[int, int]]:
+    """role_id -> (owned core skills, core skills), by the gap rule: a core (technical or
+    digital) role skill is owned when she has the exact skill, or one of embed_skill_ids
+    is at least `threshold` similar. Bounded to the given roles and skills."""
+    if not role_ids:
+        return {}
+    rows = (
+        await session.execute(
+            text(
+                "SELECT rs.role_id, count(*) AS core, "
+                "count(*) FILTER (WHERE rs.skill_id = ANY(:exact) OR best.sim >= :thr) AS owned "
+                "FROM role_skills rs "
+                "LEFT JOIN LATERAL ("
+                "  SELECT MAX(1 - (rt.embedding <=> ut.embedding)) AS sim "
+                "  FROM skill_taxonomy rt JOIN skill_taxonomy ut ON ut.skill_id = ANY(:embed) "
+                "  WHERE rt.skill_id = rs.skill_id"
+                ") best ON true "
+                "WHERE rs.role_id = ANY(:rids) AND rs.skill_type NOT IN ('soft', 'ai_usage') "
+                "GROUP BY rs.role_id"
+            ),
+            {"rids": role_ids, "embed": embed_skill_ids, "exact": exact_skill_ids, "thr": threshold},
+        )
+    ).all()
+    return {str(row.role_id): (int(row.owned), int(row.core)) for row in rows}
+
+
 async def get_rerank_texts(session: AsyncSession, role_ids: list[str]) -> dict[str, str]:
     """role_id -> short text for reranking: title + first slice of the summary.
 

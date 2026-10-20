@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # candidates retrieved per CV span before the cross-encoder re-ranks them by definition
     skill_candidate_k: int = 5
     # gap coverage: a role skill counts as covered when a user skill is at least this similar
-    gap_cosine_threshold: float = 0.50
+    gap_cosine_threshold: float = 0.65
 
     # Occupation reranker (local cross-encoder). Vendored under models/ and loaded
     # from disk offline, like the embedder (the deploy image sets HF_HUB_OFFLINE=1).

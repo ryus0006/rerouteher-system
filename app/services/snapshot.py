@@ -296,7 +296,9 @@ class SnapshotService:
         # Preferred path: rerank a unified candidate pool (Tier-1 resolved + embedding kNN)
         # with the context-aware cross-encoder. Falls through if disabled/unavailable/empty.
         if self._reranker is not None and self._settings.rerank_enabled and (titles or skill_names):
-            reranked = await self._rerank_pool(per_title, profile_vec, titles, skill_names, session)
+            reranked = await self._rerank_pool(
+                per_title, profile_vec, titles, skill_names, session, professional
+            )
             if reranked:
                 return reranked
 
@@ -423,7 +425,7 @@ class SnapshotService:
                 )
         return per_title
 
-    async def _rerank_pool(self, per_title, profile_vec, titles, skill_names, session):
+    async def _rerank_pool(self, per_title, profile_vec, titles, skill_names, session, professional=()):
         """Rank a unified candidate pool (Tier-1 resolved roles + embedding kNN) with the
         cross-encoder. Returns (previous_occupation, recommended) or None to fall through.
         The query is title + skills only - no raw CV text, so no PII is scored."""
@@ -451,9 +453,13 @@ class SnapshotService:
         query = f"{recent_title}. skills: {', '.join(skill_names)}".strip()
         logger.info("rerank inputs: query=%r candidates=%d", query, len(candidates))
         ranked_all = await anyio.to_thread.run_sync(self._reranker.rerank, query, candidates)
-        ranked = ranked_all[: self._settings.rerank_top_k]
-        if not ranked:
+        if not ranked_all:
             return None
+        # The cross-encoder's top pick stays first (it is also the previous occupation);
+        # the rest of the similar-role pool is ordered by how many of each role's core
+        # skills she already owns.
+        ranked = [ranked_all[0]] + await self._by_owned_share(ranked_all[1:], professional, session)
+        ranked = ranked[: self._settings.rerank_top_k]
 
         top = ranked[0]
         top_role = pool[top.role_id]
@@ -472,6 +478,33 @@ class SnapshotService:
             self._reranker.model_id, [(r.role, r.similarity) for r in recommended],
         )
         return previous, recommended
+
+    async def _by_owned_share(self, ranked, professional, session):
+        """Order reranked roles by the share of core skills she owns (gap rule), keeping the
+        cross-encoder order for ties. Unchanged when she has no skills or the lookup fails."""
+        exact_ids = [p.skill_id for p in professional if p.skill_id]
+        embed_ids = [p.skill_id for p in professional if p.skill_id and p.source != "role_confirmed"]
+        if not ranked or not exact_ids:
+            return list(ranked)
+        try:
+            coverage = await roles_repo.core_coverage_for_roles(
+                session, [x.role_id for x in ranked], embed_ids, exact_ids,
+                self._settings.gap_cosine_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001 - ordering must not fail the snapshot
+            logger.warning("recommendation coverage lookup failed: %s", type(exc).__name__)
+            return list(ranked)
+
+        def share(role_id: str) -> float:
+            owned, core = coverage.get(role_id, (0, 0))
+            return owned / core if core else 0.0
+
+        ordered = sorted(ranked, key=lambda x: share(x.role_id), reverse=True)  # stable
+        logger.info(
+            "recommendation owned share: %s",
+            [(x.role_id, round(share(x.role_id), 3)) for x in ordered[:5]],
+        )
+        return ordered
 
     @staticmethod
     async def _roles_from_matches(matches, session: AsyncSession):
