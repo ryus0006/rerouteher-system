@@ -73,9 +73,12 @@ class SnapshotService:
 
     async def generate(self, req: SnapshotRequest, session: AsyncSession) -> SnapshotResponse:
         await self._ensure_skill_lookup(session)
-        professional = await self._extract_skills(req, session)
+        professional, phrase_ids = await self._extract_skills(req, session)
         reframed = await self._reframe_break(req, session)
-        previous, recommended = await self._match_occupation(req, professional, session)
+        # Skills matched from a lone mention phrase count toward her skills and the gap, but
+        # stay out of the occupation match so they never shift the matched role.
+        occupation_skills = [p for p in professional if p.skill_id not in phrase_ids]
+        previous, recommended = await self._match_occupation(req, occupation_skills, session)
         logger.info(
             "snapshot: professional=%d reframed=%d occupation=%s recommended=%s",
             len(professional),
@@ -107,7 +110,8 @@ class SnapshotService:
     # ----------------------------------------------------------------- skills
     async def _extract_skills(
         self, req: SnapshotRequest, session: AsyncSession
-    ) -> list[ProfessionalSkill]:
+    ) -> tuple[list[ProfessionalSkill], set[str]]:
+        """Her CV skills, plus the ids of those found only by the phrase pass (step 4)."""
         cv = req.cv
         assert self._term_to_skill is not None
         found: dict[str, ProfessionalSkill] = {}
@@ -142,7 +146,18 @@ class SnapshotService:
                     ),
                 )
 
-        # 4. skills she ticked from her previous role's checklist (already resolved
+        # 4. mention phrases the alias dictionary does not know (e.g. "digital marketing"),
+        # matched one by one. Inside its sentence a phrase shares one embedding with the
+        # other skills there and falls under the floor; alone it matches. Runs last so it
+        # only adds skills the passes above missed.
+        phrase_ids: set[str] = set()
+        if self._embedder is not None:
+            for mention, match in await self._phrase_skills(cv.skill_mentions, session):
+                if match.skill_id not in found:
+                    phrase_ids.add(match.skill_id)
+                    found[match.skill_id] = self._professional(match.skill_id, mention)
+
+        # 5. skills she ticked from her previous role's checklist (already resolved
         # skill_ids). CV-extracted evidence wins on conflict, so only add new ids.
         for skill_id in req.confirmed_skills:
             found.setdefault(
@@ -155,17 +170,20 @@ class SnapshotService:
                     definition=self._definition(skill_id),
                 ),
             )
+        # a ticked skill always informs the occupation match, as it did before step 4
+        phrase_ids -= set(req.confirmed_skills)
 
         skills = list(found.values())
         # Diagnostic: the final accepted skills with the evidence that admitted each, so the
         # pass responsible for a noise skill is clear ("semantic match" = semantic pass;
-        # a literal term = exact/mentions pass).
+        # a literal term = exact/mentions pass, or the phrase pass when listed in phrase).
         logger.info(
-            "skills extracted: total=%d | %s",
+            "skills extracted: total=%d | %s | phrase=%s",
             len(skills),
             [(p.skill, p.evidence) for p in skills],
+            [found[i].skill for i in phrase_ids],
         )
-        return skills
+        return skills, phrase_ids
 
     def _professional(self, skill_id: str, evidence: str) -> ProfessionalSkill:
         return ProfessionalSkill(
@@ -191,11 +209,28 @@ class SnapshotService:
             if exp.description:
                 spans.extend(s.strip() for s in _SENTENCE_SPLIT_RE.split(exp.description) if s.strip())
         spans = list(dict.fromkeys(spans))[:_MAX_SEMANTIC_SPANS]
+        best: dict[str, skills_repo.SkillMatch] = {}
+        for _span, top in await self._match_spans(spans, session):
+            if top.skill_id not in best or top.similarity > best[top.skill_id].similarity:
+                best[top.skill_id] = top
+        # strongest first, so the UI can show the most relevant skills at the top
+        return sorted(best.values(), key=lambda m: m.similarity, reverse=True)
+
+    async def _phrase_skills(self, mentions, session: AsyncSession):
+        """(mention, skill) for each mention phrase the alias dictionary has no entry for."""
+        assert self._term_to_skill is not None
+        unknown = [
+            m for m in dict.fromkeys(m.strip() for m in mentions)
+            if m and m.lower() not in self._term_to_skill
+        ][:_MAX_SEMANTIC_SPANS]
+        return await self._match_spans(unknown, session)
+
+    async def _match_spans(self, spans: list[str], session: AsyncSession):
+        """(span, skill) for each span with a skill above the cosine floor."""
         if not spans:
             return []
-
         vectors = await anyio.to_thread.run_sync(self._embedder.encode, spans)
-        best: dict[str, skills_repo.SkillMatch] = {}
+        out = []
         for span, vec in zip(spans, vectors):
             # bi-encoder retrieves candidates (keeps the cosine floor so "no match ->
             # no skill" holds); the cross-encoder then picks the best one in context.
@@ -204,10 +239,9 @@ class SnapshotService:
                 threshold=self._settings.skill_cosine_threshold,
             )
             top = await self._best_skill_for_span(span, candidates)
-            if top and (top.skill_id not in best or top.similarity > best[top.skill_id].similarity):
-                best[top.skill_id] = top
-        # strongest first, so the UI can show the most relevant skills at the top
-        return sorted(best.values(), key=lambda m: m.similarity, reverse=True)
+            if top:
+                out.append((span, top))
+        return out
 
     async def _best_skill_for_span(self, span, candidates):
         """One skill per span. With the cross-encoder, re-rank the bi-encoder candidates
@@ -296,7 +330,9 @@ class SnapshotService:
         # Preferred path: rerank a unified candidate pool (Tier-1 resolved + embedding kNN)
         # with the context-aware cross-encoder. Falls through if disabled/unavailable/empty.
         if self._reranker is not None and self._settings.rerank_enabled and (titles or skill_names):
-            reranked = await self._rerank_pool(per_title, profile_vec, titles, skill_names, session)
+            reranked = await self._rerank_pool(
+                per_title, profile_vec, titles, skill_names, session
+            )
             if reranked:
                 return reranked
 
@@ -451,9 +487,12 @@ class SnapshotService:
         query = f"{recent_title}. skills: {', '.join(skill_names)}".strip()
         logger.info("rerank inputs: query=%r candidates=%d", query, len(candidates))
         ranked_all = await anyio.to_thread.run_sync(self._reranker.rerank, query, candidates)
-        ranked = ranked_all[: self._settings.rerank_top_k]
-        if not ranked:
+        if not ranked_all:
             return None
+        # The cross-encoder's top pick stays first (it is also the previous occupation);
+        # the rest keep the cross-encoder order, with roles in the top pick's job group first.
+        ranked = [ranked_all[0]] + self._same_group_first(ranked_all[0], ranked_all[1:], pool)
+        ranked = ranked[: self._settings.rerank_top_k]
 
         top = ranked[0]
         top_role = pool[top.role_id]
@@ -472,6 +511,19 @@ class SnapshotService:
             self._reranker.model_id, [(r.role, r.similarity) for r in recommended],
         )
         return previous, recommended
+
+    @staticmethod
+    def _same_group_first(top, rest, pool):
+        """Roles in the top pick's MASCO minor group (first 3 digits, e.g. 251 software and
+        applications developers) first, each part in cross-encoder order, so the other
+        recommendations stay in her line of work. Sorting by owned core skills instead pulled
+        in roles with long, broad skill lists (Data Analyst for a software developer)."""
+        group = (getattr(pool[top.role_id], "masco_code", "") or "")[:3]
+        if len(group) < 3:
+            return list(rest)
+        same = [x for x in rest if (getattr(pool[x.role_id], "masco_code", "") or "").startswith(group)]
+        same_ids = {x.role_id for x in same}
+        return same + [x for x in rest if x.role_id not in same_ids]
 
     @staticmethod
     async def _roles_from_matches(matches, session: AsyncSession):

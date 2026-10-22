@@ -37,7 +37,7 @@ from app.services.job_sources import (
 )
 from app.services.learning import LearningService
 from app.services.learning_fill import LearningFillService
-from app.services.llm import GeminiClient
+from app.services.llm import create_llm_client
 from app.services.profile_skills import ProfileSkillService
 from app.services.tavily import TavilySearcher
 from app.services.occupation_matcher import EscoTfidfMatcher
@@ -128,8 +128,8 @@ async def lifespan(app: FastAPI):
         embedder=embedder,
         gap_service=app.state.gap_service,
     )
-    # One Gemini client is shared by the companion and the learning fill.
-    llm = GeminiClient.from_settings(settings)
+    # One LLM client (Gemini or Edgemode, per LLM_PROVIDER) is shared by every AI feature.
+    llm = create_llm_client(settings)
     app.state.cv_generation_service = CvGenerationService(llm)
     # Structures masked CV text into experiences/skills; degrades to the deterministic parse.
     app.state.cv_structure_service = CvStructureService(llm)
@@ -139,6 +139,7 @@ async def lifespan(app: FastAPI):
         llm=llm,
         role_resolver=app.state.snapshot_service,
         profile_skill_service=app.state.profile_skill_service,
+        verify_mode=settings.companion_verify_mode,
     )
     # E6 on-demand learning fill: Tavily search + Gemini pick, run in the background
     # after a gap is computed. Disabled (degrades to the YouTube fallback) if either

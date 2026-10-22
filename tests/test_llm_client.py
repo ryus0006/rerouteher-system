@@ -169,3 +169,210 @@ async def test_generate_raises_when_all_keys_fail(monkeypatch):
     with pytest.raises(LlmError):
         await client.generate(system_instruction="s", contents=[], tools=None)
     assert calls == ["k1", "k2"]
+
+
+def test_settings_fallback_model_list_default_and_parsing():
+    assert Settings().gemini_fallback_model_list == ["gemini-3.1-flash-lite"]
+    assert Settings(gemini_fallback_models=" a , ,b ").gemini_fallback_model_list == ["a", "b"]
+    assert Settings(gemini_fallback_models="").gemini_fallback_model_list == []
+
+
+def test_from_settings_passes_fallback_models_and_drops_the_main_model():
+    client = GeminiClient.from_settings(
+        Settings(gemini_api_key="k", gemini_model="m", gemini_fallback_models="m,f")
+    )
+    assert client.fallback_models == ["f"]
+
+
+def _fake_client_by_model(status_for, calls):
+    class FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            model = url.split("/models/")[1].split(":")[0]
+            key = headers["x-goog-api-key"]
+            calls.append((model, key))
+            return _Resp(status_for(model, key), f"{model}/{key}")
+
+    return FakeAsyncClient
+
+
+@pytest.mark.asyncio
+async def test_generate_falls_back_to_next_model_when_every_key_fails(monkeypatch):
+    calls = []
+    import app.services.llm as llm_mod
+
+    status = lambda model, key: 503 if model == "main" else 200  # noqa: E731
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(status, calls))
+    client = GeminiClient(
+        api_keys=["k1", "k2"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "backup"
+    assert calls[:2] == [("main", "k1"), ("main", "k2")]  # every key on the main model first
+    assert calls[2][0] == "backup"
+
+
+@pytest.mark.asyncio
+async def test_generate_reports_main_model_when_it_answers(monkeypatch):
+    calls = []
+    import app.services.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(lambda m, k: 200, calls))
+    client = GeminiClient(
+        api_keys=["k"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "main"
+    assert calls == [("main", "k")]
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_when_every_model_fails(monkeypatch):
+    calls = []
+    import app.services.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(lambda m, k: 503, calls))
+    client = GeminiClient(
+        api_keys=["k"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    with pytest.raises(LlmError, match="http 503"):
+        await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("main", "k"), ("backup", "k")]
+
+
+@pytest.mark.asyncio
+async def test_timeout_skips_remaining_keys_and_goes_to_fallback_model(monkeypatch):
+    # A timeout is the model being slow, not the key: the other keys would wait
+    # just as long, so the client moves straight to the fallback model.
+    calls = []
+    import app.services.llm as llm_mod
+
+    class SlowMainModel:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            model = url.split("/models/")[1].split(":")[0]
+            key = headers["x-goog-api-key"]
+            calls.append((model, key))
+            if model == "main":
+                raise llm_mod.httpx.ReadTimeout("")
+            return _Resp(200, f"{model}/{key}")
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", SlowMainModel)
+    client = GeminiClient(
+        api_keys=["k1", "k2", "k3"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"],
+    )
+
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "backup"
+    assert calls == [("main", "k1"), ("backup", "k1")]
+
+
+def _sticky_client(monkeypatch, status_for, calls, clock):
+    import app.services.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod.httpx, "AsyncClient", _fake_client_by_model(status_for, calls))
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: clock[0])
+    return GeminiClient(
+        api_keys=["k"], model="main", base_url="https://x/v1beta", timeout_s=5,
+        fallback_models=["backup"], fallback_cooldown_s=300,
+    )
+
+
+@pytest.mark.asyncio
+async def test_later_calls_start_on_the_fallback_model_during_the_cooldown(monkeypatch):
+    calls, clock = [], [1000.0]
+    status = lambda m, k: 503 if m == "main" else 200  # noqa: E731
+    client = _sticky_client(monkeypatch, status, calls, clock)
+
+    await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("main", "k"), ("backup", "k")]
+
+    calls.clear()
+    clock[0] += 299
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "backup"
+    assert calls == [("backup", "k")]  # the down main model is not checked again
+
+
+@pytest.mark.asyncio
+async def test_main_model_is_tried_again_after_the_cooldown(monkeypatch):
+    calls, clock, main_down = [], [1000.0], [True]
+    status = lambda m, k: 503 if (m == "main" and main_down[0]) else 200  # noqa: E731
+    client = _sticky_client(monkeypatch, status, calls, clock)
+    await client.generate(system_instruction="s", contents=[], tools=None)
+
+    main_down[0] = False
+    clock[0] += 300
+    calls.clear()
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "main"
+    assert calls == [("main", "k")]
+
+    calls.clear()
+    await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("main", "k")]  # back on the main model for good
+
+
+@pytest.mark.asyncio
+async def test_still_down_after_cooldown_falls_back_and_restarts_the_cooldown(monkeypatch):
+    calls, clock = [], [1000.0]
+    status = lambda m, k: 503 if m == "main" else 200  # noqa: E731
+    client = _sticky_client(monkeypatch, status, calls, clock)
+    await client.generate(system_instruction="s", contents=[], tools=None)
+
+    clock[0] += 300
+    calls.clear()
+    await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("main", "k"), ("backup", "k")]
+
+    clock[0] += 299
+    calls.clear()
+    await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("backup", "k")]
+
+
+@pytest.mark.asyncio
+async def test_fallback_failing_during_the_cooldown_goes_back_to_the_main_model(monkeypatch):
+    calls, clock, backup_down = [], [1000.0], [False]
+    main_down = [True]
+    status = lambda m, k: 503 if ((m == "main" and main_down[0]) or (m == "backup" and backup_down[0])) else 200  # noqa: E731
+    client = _sticky_client(monkeypatch, status, calls, clock)
+    await client.generate(system_instruction="s", contents=[], tools=None)
+
+    main_down[0], backup_down[0] = False, True
+    clock[0] += 10
+    calls.clear()
+    result = await client.generate(system_instruction="s", contents=[], tools=None)
+    assert result.model == "main"
+    assert calls == [("backup", "k"), ("main", "k")]
+
+    calls.clear()
+    await client.generate(system_instruction="s", contents=[], tools=None)
+    assert calls == [("main", "k")]
+
+
+def test_settings_fallback_cooldown_default():
+    assert Settings().gemini_fallback_cooldown_s == 600.0

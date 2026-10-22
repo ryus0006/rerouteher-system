@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # candidates retrieved per CV span before the cross-encoder re-ranks them by definition
     skill_candidate_k: int = 5
     # gap coverage: a role skill counts as covered when a user skill is at least this similar
-    gap_cosine_threshold: float = 0.50
+    gap_cosine_threshold: float = 0.65
 
     # Occupation reranker (local cross-encoder). Vendored under models/ and loaded
     # from disk offline, like the embedder (the deploy image sets HF_HUB_OFFLINE=1).
@@ -52,9 +52,35 @@ class Settings(BaseSettings):
     # rotates to the next non-empty one. Set as many as you have quota for.
     gemini_api_key_2: str = ""
     gemini_api_key_3: str = ""
-    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_model: str = "gemini-3.5-flash-lite"
+    # Comma-separated models tried in order when every key fails on gemini_model
+    # (e.g. a 503 "model overloaded"). Empty -> no model fallback.
+    gemini_fallback_models: str = "gemini-3.1-flash-lite"
+    # Once a fallback model has answered, calls stay on it this long before the
+    # main model is tried again, so an outage is not re-checked on every call.
+    gemini_fallback_cooldown_s: float = 600.0
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_timeout_s: float = 30.0
+
+    # Which LLM serves every feature: "gemini" (default) or "edgemode" (an
+    # OpenAI-compatible API). Switching needs only this env var and a restart.
+    llm_provider: str = "gemini"
+    edgemode_api_key: str = ""
+    edgemode_model: str = "qwen3.8-27b"
+    edgemode_base_url: str = "https://token-api.korika.ai.id/v1"
+    edgemode_timeout_s: float = 30.0
+    # When the main provider fails, the other one answers: "auto" (the other provider,
+    # if its key is set), "none", "gemini" or "edgemode". The provider that answered is
+    # kept for the cooldown before the main one is tried again.
+    llm_fallback_provider: str = "auto"
+    llm_fallback_cooldown_s: float = 600.0
+
+    # Companion profile verify pass after each build turn, so a detail she gives is saved
+    # even when the model does not call update_profile: "auto", "always", "missed" (only
+    # when the model did not save that turn) or "off". "auto" follows the provider that is
+    # answering: "missed" on Gemini, which saves reliably, "always" on Edgemode/Qwen, which
+    # often skips the save (this also covers a provider fallback mid-session).
+    companion_verify_mode: str = "auto"
 
     # E6 on-demand learning fill (Tavily search + Gemini picks one free resource).
     learning_fill_enabled: bool = True
@@ -101,7 +127,13 @@ class Settings(BaseSettings):
         ]
 
     @property
+    def gemini_fallback_model_list(self) -> list[str]:
+        return [m.strip() for m in self.gemini_fallback_models.split(",") if m.strip()]
+
+    @property
     def llm_configured(self) -> bool:
+        if self.llm_provider.strip().lower() == "edgemode":
+            return bool(self.edgemode_api_key)
         return bool(self.gemini_api_keys)
 
     @property

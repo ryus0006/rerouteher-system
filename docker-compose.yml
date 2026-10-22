@@ -14,7 +14,9 @@ services:
       # runs on first init only, in order: bootstrap (extension + schema), db-team base
       # schema, db-team data, our E5 account model change (for db-team review), our E6
       # learning data fill, our E9 employer overlay, our E8 companion history, our E7
-      # interview coach schema + seed, E9 job-search cache, then finalize (turn FK back on).
+      # interview coach schema + seed, E9 job-search cache, the UAT reference data (08_z,
+      # replaces the 02 data and the seeds; 02_data.sql is kept empty), then finalize
+      # (turn FK back on).
       - ./db/00_init_extensions_schemas.sql:/docker-entrypoint-initdb.d/00_init_extensions_schemas.sql:ro
       - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./db/02_data.sql:/docker-entrypoint-initdb.d/02_data.sql:ro
@@ -27,6 +29,7 @@ services:
       - ./db/e7_interview_question_rubric.csv:/docker-entrypoint-initdb.d/e7_interview_question_rubric.csv:ro
       - ./db/07_e7_interview_coach.sql:/docker-entrypoint-initdb.d/07_e7_interview_coach.sql:ro
       - ./db/08_e9_job_search.sql:/docker-entrypoint-initdb.d/08_e9_job_search.sql:ro
+      - ./db/08_z_uat_data.sql:/docker-entrypoint-initdb.d/08_z_uat_data.sql:ro
       - ./db/09_finalize.sql:/docker-entrypoint-initdb.d/09_finalize.sql:ro
     healthcheck:
       # -h localhost forces a TCP probe. The image runs a temporary socket-only server
@@ -53,7 +56,15 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_API_KEY_2: ${GEMINI_API_KEY_2:-}
       GEMINI_API_KEY_3: ${GEMINI_API_KEY_3:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      GEMINI_FALLBACK_MODELS: ${GEMINI_FALLBACK_MODELS:-gemini-3.1-flash-lite}
+      GEMINI_FALLBACK_COOLDOWN_S: ${GEMINI_FALLBACK_COOLDOWN_S:-600}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      EDGEMODE_API_KEY: ${EDGEMODE_API_KEY:-}
+      EDGEMODE_MODEL: ${EDGEMODE_MODEL:-qwen3.8-27b}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-auto}
+      LLM_FALLBACK_COOLDOWN_S: ${LLM_FALLBACK_COOLDOWN_S:-600}
+      COMPANION_VERIFY_MODE: ${COMPANION_VERIFY_MODE:-auto}
       # E6 learning-material fill. Web search via the Tavily API (official, free
       # tier). Empty -> learning fill degrades off, learning page keeps its fallback.
       # Backup keys rotate on a 429, same as the Gemini keys.

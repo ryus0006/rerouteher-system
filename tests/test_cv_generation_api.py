@@ -192,3 +192,18 @@ def test_generate_maps_service_errors_to_stable_codes(app_client, code, status):
 
     assert response.status_code == status
     assert response.json() == {"error": code}
+
+
+def test_improve_request_bounds_its_text_inputs():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.cv import CvImproveRequest
+
+    req = CvImproveRequest(roleId="r", section="summary", currentText="x",
+                           previousSuggestions=[str(i) for i in range(9)])
+    assert req.previous_suggestions == ["4", "5", "6", "7", "8"]
+    with pytest.raises(ValidationError):
+        CvImproveRequest(roleId="r", section="summary", currentText="x" * 4001)
+    with pytest.raises(ValidationError):  # oversized items are rejected, never sliced
+        CvImproveRequest(roleId="r", section="summary", previousSuggestions=["y" * 4001])

@@ -30,6 +30,7 @@ class NearestRole:
     role_id: str
     role_title: str
     similarity: float
+    masco_code: str = ""
 
 
 @dataclass
@@ -211,7 +212,7 @@ async def nearest_by_embedding(
     rows = (
         await session.execute(
             text(
-                "SELECT role_id, role_title, "
+                "SELECT role_id, role_title, masco_code, "
                 "1 - (role_embedding <=> CAST(:v AS vector)) AS similarity "
                 "FROM roles WHERE flexible_role = true "
                 "ORDER BY role_embedding <=> CAST(:v AS vector) LIMIT :k"
@@ -219,4 +220,4 @@ async def nearest_by_embedding(
             {"v": vec_literal, "k": k},
         )
     ).all()
-    return [NearestRole(r.role_id, r.role_title, float(r.similarity)) for r in rows]
+    return [NearestRole(r.role_id, r.role_title, float(r.similarity), r.masco_code or "") for r in rows]
