@@ -70,9 +70,12 @@ class SnapshotService:
         self._term_to_skill: dict[str, str] | None = None
         self._skill_to_canonical: dict[str, str] = {}
         self._skill_to_definition: dict[str, str | None] = {}
+        # roles on a catch-all placeholder skill list, left out of every role search
+        self._placeholder_roles: list[str] | None = None
 
     async def generate(self, req: SnapshotRequest, session: AsyncSession) -> SnapshotResponse:
         await self._ensure_skill_lookup(session)
+        await self._ensure_placeholder_roles(session)
         professional, phrase_ids = await self._extract_skills(req, session)
         reframed = await self._reframe_break(req, session)
         # Skills matched from a lone mention phrase count toward her skills and the gap, but
@@ -92,6 +95,19 @@ class SnapshotService:
             previous_occupation=previous,
             recommended_roles=recommended,
         )
+
+    async def _ensure_placeholder_roles(self, session: AsyncSession) -> None:
+        if self._placeholder_roles is not None:
+            return
+        try:
+            ids = await roles_repo.placeholder_role_ids(
+                session, self._settings.placeholder_role_min_shared
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed lookup must not fail the snapshot
+            logger.warning("placeholder role lookup failed: %s", type(exc).__name__)
+            return  # retried on the next request
+        self._placeholder_roles = sorted(ids)
+        logger.info("placeholder roles left out of role search: %d", len(ids))
 
     # ------------------------------------------------------------- skill lookup
     async def _ensure_skill_lookup(self, session: AsyncSession) -> None:
@@ -349,7 +365,7 @@ class SnapshotService:
             else:
                 tier1 = recent[1]
             logger.info("occupation Tier 1: %s", tier1[:5])
-            resolved = await self._roles_from_matches(tier1, session)
+            resolved = await self._roles_from_matches(tier1, session, self._excluded())
             if resolved:
                 top_role, top_score = resolved[0]
                 previous = PreviousOccupation(
@@ -366,7 +382,9 @@ class SnapshotService:
                 # top up to 3 with the nearest roles by embedding, excluding ones already listed
                 if len(recommended) < 3 and profile_vec is not None:
                     seen_ids = {role.role_id for role, _ in resolved}
-                    for r in await roles_repo.nearest_by_embedding(session, profile_vec, k=6):
+                    for r in await roles_repo.nearest_by_embedding(
+                        session, profile_vec, k=6, exclude=self._excluded()
+                    ):
                         if len(recommended) >= 3:
                             break
                         if r.role_id not in seen_ids:
@@ -382,7 +400,9 @@ class SnapshotService:
         # Tier 2 fallback: embedding match over the role pool
         if profile_vec is None:
             return None, []
-        nearest = await roles_repo.nearest_by_embedding(session, profile_vec, k=1)
+        nearest = await roles_repo.nearest_by_embedding(
+            session, profile_vec, k=1, exclude=self._excluded()
+        )
         if not nearest:
             return None, []
         top = nearest[0]
@@ -392,7 +412,9 @@ class SnapshotService:
         )
         recommended = [RecommendedRole(role=top.role_title, role_id=top.role_id, similarity=1.0)]
         seen_ids = {top.role_id}
-        for r in await roles_repo.nearest_by_embedding(session, profile_vec, k=4):
+        for r in await roles_repo.nearest_by_embedding(
+            session, profile_vec, k=4, exclude=self._excluded()
+        ):
             if len(recommended) >= 3:
                 break
             if r.role_id not in seen_ids:
@@ -408,6 +430,7 @@ class SnapshotService:
         the best with the cross-encoder when available. The TF-IDF Tier-1 classifier is
         brittle, so it is only a fallback when no embedder is loaded. Returns an object
         with .role_id/.role_title, or None."""
+        await self._ensure_placeholder_roles(session)
         norm_title = normalize_text(title or "")
         norm_skills = [normalize_text(s) for s in (skill_names or []) if s.strip()]
         emb_text = self._embedding_text(norm_title, norm_skills)
@@ -417,13 +440,13 @@ class SnapshotService:
                 self._gather_tier1, [norm_title] if norm_title else [], norm_skills
             )
             if per_title:
-                resolved = await self._roles_from_matches(per_title[0][1], session)
+                resolved = await self._roles_from_matches(per_title[0][1], session, self._excluded())
                 if resolved:
                     return resolved[0][0]
             return None
         profile_vec = await anyio.to_thread.run_sync(self._embedder.encode_one, emb_text)
         nearest = await roles_repo.nearest_by_embedding(
-            session, profile_vec, k=self._settings.rerank_candidate_pool
+            session, profile_vec, k=self._settings.rerank_candidate_pool, exclude=self._excluded()
         )
         if not nearest:
             return None
@@ -464,14 +487,17 @@ class SnapshotService:
         cross-encoder. Returns (previous_occupation, recommended) or None to fall through.
         The query is title + skills only - no raw CV text, so no PII is scored."""
         pool: dict[str, object] = {}
+        # how many of her job titles the classifier linked to each role
+        title_hits: dict[str, int] = {}
         # 1. every Tier-1 prediction resolved to a role
         for _score, preds in per_title:
-            for role, _s in await self._roles_from_matches(preds, session):
+            for role, _s in await self._roles_from_matches(preds, session, self._excluded()):
                 pool.setdefault(role.role_id, role)
+                title_hits[role.role_id] = title_hits.get(role.role_id, 0) + 1
         # 2. nearest roles by embedding
         if profile_vec is not None:
             for r in await roles_repo.nearest_by_embedding(
-                session, profile_vec, k=self._settings.rerank_candidate_pool
+                session, profile_vec, k=self._settings.rerank_candidate_pool, exclude=self._excluded()
             ):
                 pool.setdefault(r.role_id, r)
         if not pool:
@@ -489,9 +515,14 @@ class SnapshotService:
         ranked_all = await anyio.to_thread.run_sync(self._reranker.rerank, query, candidates)
         if not ranked_all:
             return None
-        # The cross-encoder's top pick stays first (it is also the previous occupation);
-        # the rest keep the cross-encoder order, with roles in the top pick's job group first.
-        ranked = [ranked_all[0]] + self._same_group_first(ranked_all[0], ranked_all[1:], pool)
+        # The top pick is her previous occupation: a role linked to two or more of her job
+        # titles when there is one (the best ranked of them), since one role across her
+        # career outweighs a word in the latest title ("quality assurance chemist" and
+        # "research chemist" -> Chemist, not a QA role); otherwise the cross-encoder's top.
+        # The rest keep the cross-encoder order, with roles in the top pick's job group first.
+        top = next((x for x in ranked_all if title_hits.get(x.role_id, 0) >= 2), ranked_all[0])
+        rest = [x for x in ranked_all if x.role_id != top.role_id]
+        ranked = [top] + self._same_group_first(top, rest, pool)
         ranked = ranked[: self._settings.rerank_top_k]
 
         top = ranked[0]
@@ -512,24 +543,35 @@ class SnapshotService:
         )
         return previous, recommended
 
+    def _excluded(self) -> list[str]:
+        return self._placeholder_roles or []
+
     @staticmethod
     def _same_group_first(top, rest, pool):
         """Roles in the top pick's MASCO minor group (first 3 digits, e.g. 251 software and
-        applications developers) first, each part in cross-encoder order, so the other
-        recommendations stay in her line of work. Sorting by owned core skills instead pulled
-        in roles with long, broad skill lists (Data Analyst for a software developer)."""
-        group = (getattr(pool[top.role_id], "masco_code", "") or "")[:3]
-        if len(group) < 3:
-            return list(rest)
-        same = [x for x in rest if (getattr(pool[x.role_id], "masco_code", "") or "").startswith(group)]
-        same_ids = {x.role_id for x in same}
-        return same + [x for x in rest if x.role_id not in same_ids]
+        applications developers) first, then its sub-major group (first 2 digits, e.g. 21
+        science and engineering professionals), then the rest, each part in cross-encoder
+        order, so the other recommendations stay in her line of work. Sorting by owned core
+        skills instead pulled in roles with long, broad skill lists (Data Analyst for a
+        software developer)."""
+        def code(x) -> str:
+            return getattr(pool[x.role_id], "masco_code", "") or ""
+
+        top_code = code(top)
+        ordered, seen = [], set()
+        for digits in (3, 2):
+            if len(top_code) < digits:
+                continue
+            for x in rest:
+                if x.role_id not in seen and code(x).startswith(top_code[:digits]):
+                    ordered.append(x)
+                    seen.add(x.role_id)
+        return ordered + [x for x in rest if x.role_id not in seen]
 
     @staticmethod
-    async def _roles_from_matches(matches, session: AsyncSession):
-        """Resolve matches to roles by ESCO code (precise), then MASCO code as fallback.
-
-        Deduped, input order preserved.
+    async def _roles_from_matches(matches, session: AsyncSession, exclude=()):
+        """Resolve matches to roles by ESCO code (precise), then MASCO code as fallback,
+        skipping the excluded roles. Deduped, input order preserved.
         """
         resolved: list[tuple] = []
         seen: set[str] = set()
@@ -537,10 +579,10 @@ class SnapshotService:
             role = None
             if getattr(m, "esco_code", None):
                 role = await roles_repo.get_by_esco_code(
-                    session, m.esco_code, getattr(m, "esco_title", None)
+                    session, m.esco_code, getattr(m, "esco_title", None), exclude=exclude
                 )
             if role is None and m.masco_code:
-                role = await roles_repo.get_by_masco_code(session, m.masco_code)
+                role = await roles_repo.get_by_masco_code(session, m.masco_code, exclude=exclude)
             if role and role.role_id not in seen:
                 logger.info(
                     "occupation resolve: esco=%s masco=%s score=%.3f -> role_id=%s title=%r role_masco=%s",

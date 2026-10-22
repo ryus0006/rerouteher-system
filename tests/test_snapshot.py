@@ -83,20 +83,28 @@ def patch_repos(monkeypatch):
             rows.append(ReframedRow(a, "Coordination", "Coordination"))  # duplicate -> dedupe target
         return rows
 
-    async def _nearest(session, vec, k):
-        return [
+    async def _nearest(session, vec, k, exclude=()):
+        roles = [
             NearestRole("r1", "Project Coordinator", 0.91),
             NearestRole("r2", "Operations Executive", 0.77),
             NearestRole("r3", "Admin Executive", 0.66),
             NearestRole("r4", "HR Coordinator", 0.60),
         ]
+        return [r for r in roles if r.role_id not in exclude]
 
-    async def _get_by_esco(session, code, esco_title=None):
+    async def _get_by_esco(session, code, esco_title=None, exclude=()):
         # the FakeMatcher's esco_code resolves to a role
-        return Role("r_mkt", "Marketing Manager", "1234") if code == "1234.1" else None
+        if code == "1234.1" and "r_mkt" not in exclude:
+            return Role("r_mkt", "Marketing Manager", "1234")
+        return None
 
-    async def _get_by_masco(session, code):
-        return Role("r_mkt", "Marketing Manager", "1234") if code == "1234" else None
+    async def _get_by_masco(session, code, exclude=()):
+        if code == "1234" and "r_mkt" not in exclude:
+            return Role("r_mkt", "Marketing Manager", "1234")
+        return None
+
+    async def _placeholders(session, min_shared):
+        return set()
 
     monkeypatch.setattr(skills_repo, "list_skills", _list_skills)
     monkeypatch.setattr(skills_repo, "load_alias_dictionary", _load_alias_dictionary)
@@ -105,6 +113,7 @@ def patch_repos(monkeypatch):
     monkeypatch.setattr(roles_repo, "nearest_by_embedding", _nearest)
     monkeypatch.setattr(roles_repo, "get_by_esco_code", _get_by_esco)
     monkeypatch.setattr(roles_repo, "get_by_masco_code", _get_by_masco)
+    monkeypatch.setattr(roles_repo, "placeholder_role_ids", _placeholders)
 
 
 def _request(title="Project Coordinator") -> SnapshotRequest:
@@ -420,3 +429,77 @@ async def test_phrase_pass_adds_unknown_mentions_but_keeps_them_out_of_the_role_
     assert dm.skill == "Digital Marketing Techniques" and dm.evidence == "digital marketing"
     assert "budgeting" in reranker.query_seen  # alias-matched skills still inform the role
     assert "digital marketing" not in reranker.query_seen
+
+
+async def test_placeholder_roles_are_left_out_of_every_role_search(monkeypatch):
+    # r_mkt (Tier 1) and r1 (nearest) sit on a catch-all placeholder skill list
+    seen = []
+
+    async def _placeholders(session, min_shared):
+        seen.append(min_shared)
+        return {"r_mkt", "r1"}
+
+    async def _texts(session, ids):
+        return {i: f"role {i}" for i in ids}
+
+    monkeypatch.setattr(roles_repo, "placeholder_role_ids", _placeholders)
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts)
+    svc = SnapshotService(
+        Settings(), embedder=FakeEmbedder(), tfidf_matcher=FakeMatcher(),
+        reranker=FakeReranker(preferred_order=["r_mkt", "r1", "r2"]),
+    )
+    resp = await svc.generate(_request(), session=object())
+    ids = [r.role_id for r in resp.recommended_roles]
+    assert "r_mkt" not in ids and "r1" not in ids
+    assert ids[0] == "r2"
+    assert seen == [Settings().placeholder_role_min_shared]  # looked up once
+    await svc.generate(_request(), session=object())
+    assert len(seen) == 1  # cached on the service
+
+
+async def test_resolve_role_skips_placeholder_roles(monkeypatch):
+    async def _placeholders(session, min_shared):
+        return {"r1"}
+
+    monkeypatch.setattr(roles_repo, "placeholder_role_ids", _placeholders)
+    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None, reranker=None)
+    role = await svc.resolve_role("Project Coordinator", [], session=object())
+    assert role.role_id == "r2"  # nearest non-placeholder role
+
+
+def test_job_group_order_falls_back_to_the_two_digit_group():
+    # top pick Chemist (211); nothing else in 211, so the 21 roles come before the rest
+    pool = {
+        "A": Role("A", "Chemist", "211302"),
+        "B": NearestRole("B", "QA Engineering Technician", 0.5, "311928"),
+        "C": NearestRole("C", "Chemical Engineer", 0.5, "214503"),
+        "D": NearestRole("D", "Chemistry Technician", 0.5, "311106"),
+        "E": NearestRole("E", "Bio-Fermentation Specialist", 0.5, "213433"),
+    }
+    ranked = _ranked("A", "B", "C", "D", "E")
+    ordered = SnapshotService._same_group_first(ranked[0], ranked[1:], pool)
+    assert [x.role_id for x in ordered] == ["C", "E", "B", "D"]
+
+
+async def test_top_pick_is_the_role_linked_to_two_of_her_titles(monkeypatch):
+    # the classifier links r_mkt to both titles; the reranker prefers r2, which only the
+    # embedding search found, so r_mkt still becomes her previous occupation
+    async def _texts(session, ids):
+        return {i: f"role {i}" for i in ids}
+
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts)
+    svc = SnapshotService(
+        Settings(), embedder=FakeEmbedder(), tfidf_matcher=FakeMatcher(),
+        reranker=FakeReranker(preferred_order=["r2", "r_mkt"]),
+    )
+    req = SnapshotRequest(
+        cv=CV(
+            raw_text="Quality assurance chemist. Research chemist.",
+            experiences=[Experience(title="Quality Assurance Chemist"), Experience(title="Research Chemist")],
+            skill_mentions=[],
+        ),
+        break_=Break(duration_years=0, activities=[]),
+    )
+    resp = await svc.generate(req, session=object())
+    assert resp.previous_occupation.role_id == "r_mkt"
+    assert [r.role_id for r in resp.recommended_roles][:2] == ["r_mkt", "r2"]

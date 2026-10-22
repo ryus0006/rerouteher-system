@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     rerank_cache_dir: str | None = None  # unused for local paths; kept for override
     rerank_candidate_pool: int = 15
     rerank_top_k: int = 3
+    # A role whose technical/digital skill list is identical to this many roles' lists is a
+    # catch-all placeholder (UAT: 73 and 55 roles share two such lists; the largest real
+    # shared list is 23 medical doctor roles) and is left out of every role search.
+    placeholder_role_min_shared: int = 30
 
     ai_exposure_low: float = 0.1
     ai_exposure_medium: float = 0.15

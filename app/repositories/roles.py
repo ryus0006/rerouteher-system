@@ -1,6 +1,7 @@
 """Role queries: pgvector nearest-neighbour and role-with-skills lookup."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -41,7 +42,7 @@ class Role:
 
 
 async def get_by_esco_code(
-    session: AsyncSession, esco_code: str, esco_title: str | None = None
+    session: AsyncSession, esco_code: str, esco_title: str | None = None, exclude: Sequence[str] = ()
 ) -> Role | None:
     # One ESCO code maps to several MASCO roles (e.g. 2512.4 -> Software Developer,
     # Technical Specialist (.Net), Computer Programmer, C/C++ Programmer), so pick the role
@@ -50,12 +51,14 @@ async def get_by_esco_code(
         await session.execute(
             text(
                 "SELECT role_id, role_title, masco_code FROM roles WHERE esco_code = :c "
+                "AND NOT (role_id = ANY(:ex)) "
                 "ORDER BY (lower(role_title) = lower(:t)) DESC, "
                 "(role_title ILIKE :like) DESC, masco_code "
                 "LIMIT 1"
             ),
             {
                 "c": esco_code,
+                "ex": list(exclude),
                 "t": esco_title or "",
                 "like": f"%{esco_title}%" if esco_title else "",
             },
@@ -64,11 +67,16 @@ async def get_by_esco_code(
     return Role(row.role_id, row.role_title, row.masco_code) if row else None
 
 
-async def get_by_masco_code(session: AsyncSession, masco_code: str) -> Role | None:
+async def get_by_masco_code(
+    session: AsyncSession, masco_code: str, exclude: Sequence[str] = ()
+) -> Role | None:
     row = (
         await session.execute(
-            text("SELECT role_id, role_title, masco_code FROM roles WHERE masco_code = :c LIMIT 1"),
-            {"c": masco_code},
+            text(
+                "SELECT role_id, role_title, masco_code FROM roles "
+                "WHERE masco_code = :c AND NOT (role_id = ANY(:ex)) LIMIT 1"
+            ),
+            {"c": masco_code, "ex": list(exclude)},
         )
     ).first()
     if row is None and masco_code:
@@ -78,9 +86,10 @@ async def get_by_masco_code(session: AsyncSession, masco_code: str) -> Role | No
             await session.execute(
                 text(
                     "SELECT role_id, role_title, masco_code FROM roles "
-                    "WHERE masco_code LIKE :p ORDER BY masco_code LIMIT 1"
+                    "WHERE masco_code LIKE :p AND NOT (role_id = ANY(:ex)) "
+                    "ORDER BY masco_code LIMIT 1"
                 ),
-                {"p": f"{masco_code}%"},
+                {"p": f"{masco_code}%", "ex": list(exclude)},
             )
         ).first()
     return Role(row.role_id, row.role_title, row.masco_code) if row else None
@@ -178,6 +187,28 @@ async def best_similarity_for_role(
     return {str(r.rid): float(r.best_sim) for r in rows}
 
 
+async def placeholder_role_ids(session: AsyncSession, min_shared: int) -> set[str]:
+    """Roles whose technical/digital skill list is identical to the list of at least
+    `min_shared` roles (their own included). These are the data's catch-all lists, e.g. one
+    research + engineering set given to 73 unrelated roles (UX Designer, Credit Control
+    Clerk), so their gap says nothing about the role and they are not offered."""
+    rows = (
+        await session.execute(
+            text(
+                "WITH sig AS ("
+                "  SELECT role_id, string_agg(skill_id, ',' ORDER BY skill_id) AS s "
+                "  FROM role_skills WHERE skill_type NOT IN ('soft', 'ai_usage') "
+                "  GROUP BY role_id"
+                ") "
+                "SELECT role_id FROM sig "
+                "WHERE s IN (SELECT s FROM sig GROUP BY s HAVING count(*) >= :n)"
+            ),
+            {"n": min_shared},
+        )
+    ).all()
+    return {str(r.role_id) for r in rows}
+
+
 async def get_rerank_texts(session: AsyncSession, role_ids: list[str]) -> dict[str, str]:
     """role_id -> short text for reranking: title + first slice of the summary.
 
@@ -205,19 +236,21 @@ async def get_rerank_texts(session: AsyncSession, role_ids: list[str]) -> dict[s
 
 
 async def nearest_by_embedding(
-    session: AsyncSession, query_vec: np.ndarray, k: int
+    session: AsyncSession, query_vec: np.ndarray, k: int, exclude: Sequence[str] = ()
 ) -> list[NearestRole]:
-    """Cosine kNN over roles.role_embedding (pgvector `<=>`, similarity = 1 - distance)."""
+    """Cosine kNN over roles.role_embedding (pgvector `<=>`, similarity = 1 - distance).
+    Over every role, flexible or not: her role match follows her CV only; her needs as a
+    mother (flexible work and the like) apply in the job search, not here."""
     vec_literal = "[" + ",".join(f"{x:.6f}" for x in query_vec.tolist()) + "]"
     rows = (
         await session.execute(
             text(
                 "SELECT role_id, role_title, masco_code, "
                 "1 - (role_embedding <=> CAST(:v AS vector)) AS similarity "
-                "FROM roles WHERE flexible_role = true "
+                "FROM roles WHERE NOT (role_id = ANY(:ex)) "
                 "ORDER BY role_embedding <=> CAST(:v AS vector) LIMIT :k"
             ),
-            {"v": vec_literal, "k": k},
+            {"v": vec_literal, "k": k, "ex": list(exclude)},
         )
     ).all()
     return [NearestRole(r.role_id, r.role_title, float(r.similarity), r.masco_code or "") for r in rows]
