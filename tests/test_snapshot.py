@@ -358,27 +358,65 @@ def _ranked(*role_ids):
     return [RerankResult(rid, 1.0 - i * 0.1) for i, rid in enumerate(role_ids)]
 
 
-def _skills(*ids):
-    from app.schemas.snapshot import ProfessionalSkill
-    return [ProfessionalSkill(skill=i, skill_id=i) for i in ids]
+def test_recommendations_after_the_top_pick_put_same_job_group_first():
+    # top pick is in MASCO group 251; the reranker's 2nd/3rd are data roles (252), which
+    # follow the same-group roles, each part keeping the reranker order
+    pool = {
+        "A": Role("A", "Software Developer", "251201"),
+        "B": NearestRole("B", "Data Analyst", 0.5, "252403"),
+        "C": NearestRole("C", "Database Administrator", 0.5, "252103"),
+        "D": NearestRole("D", "Systems Programmer", 0.5, "251407"),
+        "E": NearestRole("E", "Website Developer", 0.5, "251301"),
+    }
+    ranked = _ranked("A", "B", "C", "D", "E")
+    ordered = SnapshotService._same_group_first(ranked[0], ranked[1:], pool)
+    assert [x.role_id for x in ordered] == ["D", "E", "B", "C"]
 
 
-async def test_recommendations_after_the_top_pick_follow_owned_count(monkeypatch):
-    async def coverage(session, role_ids, embed, exact, threshold):
-        assert threshold == Settings().gap_cosine_threshold
-        return {"B": (1, 10), "C": (6, 60), "D": (3, 5)}  # count wins over share
-
-    monkeypatch.setattr(roles_repo, "core_coverage_for_roles", coverage)
-    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None)
-    ordered = await svc._by_owned_count(_ranked("B", "C", "D"), _skills("s1"), session=object())
-    assert [x.role_id for x in ordered] == ["C", "D", "B"]
+def test_same_group_first_keeps_reranker_order_without_a_group():
+    pool = {"A": NearestRole("A", "Top", 0.9), "B": NearestRole("B", "Two", 0.5, "251201"),
+            "C": NearestRole("C", "Three", 0.5, "251401")}
+    ranked = _ranked("A", "B", "C")
+    assert [x.role_id for x in SnapshotService._same_group_first(ranked[0], ranked[1:], pool)] == ["B", "C"]
 
 
-async def test_owned_count_keeps_reranker_order_without_skills_or_on_error(monkeypatch):
-    async def broken(*a, **k):
-        raise RuntimeError("db down")
+async def test_phrase_pass_adds_unknown_mentions_but_keeps_them_out_of_the_role_query(monkeypatch):
+    # "digital marketing" has no alias entry and its sentence does not mention it, so only
+    # the phrase pass finds it: it joins her skills (evidence = her phrase) but not the query
+    class MarkingEmbedder(FakeEmbedder):
+        def encode(self, texts):
+            out = np.zeros((len(texts), 384), dtype="float32")
+            for i, t in enumerate(texts):
+                out[i, 0] = 1.0 if "digital marketing" in t else 0.0
+            return out
 
-    monkeypatch.setattr(roles_repo, "core_coverage_for_roles", broken)
-    svc = SnapshotService(Settings(), embedder=FakeEmbedder(), tfidf_matcher=None)
-    assert [x.role_id for x in await svc._by_owned_count(_ranked("B", "C"), _skills("s1"), object())] == ["B", "C"]
-    assert [x.role_id for x in await svc._by_owned_count(_ranked("B", "C"), [], object())] == ["B", "C"]
+    async def _match(session, vec, k, threshold):
+        if vec[0] == 1.0:
+            return [SkillMatch("s_dm", "Digital Marketing Techniques", 0.76, "promoting online")]
+        return []
+
+    async def _list_skills(session):
+        return SKILL_ROWS + [SkillRow("s_dm", "Digital Marketing Techniques", "technical", "promoting online")]
+
+    async def _texts(session, ids):
+        return {i: f"role {i}" for i in ids}
+
+    monkeypatch.setattr(skills_repo, "match_by_embedding", _match)
+    monkeypatch.setattr(skills_repo, "list_skills", _list_skills)
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts)
+    reranker = FakeReranker(preferred_order=["r1"])
+    svc = SnapshotService(Settings(), embedder=MarkingEmbedder(), tfidf_matcher=None, reranker=reranker)
+    req = SnapshotRequest(
+        cv=CV(
+            raw_text="Ran campaigns and budgeting.",
+            experiences=[Experience(title="Executive", description="Ran campaigns.")],
+            skill_mentions=["digital marketing", "budgeting"],
+        ),
+        break_=Break(duration_years=0, activities=[]),
+    )
+    resp = await svc.generate(req, session=object())
+
+    dm = next(p for p in resp.professional_skills if p.skill_id == "s_dm")
+    assert dm.skill == "Digital Marketing Techniques" and dm.evidence == "digital marketing"
+    assert "budgeting" in reranker.query_seen  # alias-matched skills still inform the role
+    assert "digital marketing" not in reranker.query_seen
