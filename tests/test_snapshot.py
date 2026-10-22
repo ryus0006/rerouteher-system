@@ -106,6 +106,9 @@ def patch_repos(monkeypatch):
     async def _placeholders(session, min_shared):
         return set()
 
+    async def _counts(session, role_ids, embed, exact, threshold):
+        return {r: 1 for r in role_ids}  # every role matches one of her skills
+
     monkeypatch.setattr(skills_repo, "list_skills", _list_skills)
     monkeypatch.setattr(skills_repo, "load_alias_dictionary", _load_alias_dictionary)
     monkeypatch.setattr(skills_repo, "match_by_embedding", _match_by_embedding)
@@ -114,6 +117,7 @@ def patch_repos(monkeypatch):
     monkeypatch.setattr(roles_repo, "get_by_esco_code", _get_by_esco)
     monkeypatch.setattr(roles_repo, "get_by_masco_code", _get_by_masco)
     monkeypatch.setattr(roles_repo, "placeholder_role_ids", _placeholders)
+    monkeypatch.setattr(roles_repo, "matched_counts_for_roles", _counts)
 
 
 def _request(title="Project Coordinator") -> SnapshotRequest:
@@ -503,3 +507,54 @@ async def test_top_pick_is_the_role_linked_to_two_of_her_titles(monkeypatch):
     resp = await svc.generate(req, session=object())
     assert resp.previous_occupation.role_id == "r_mkt"
     assert [r.role_id for r in resp.recommended_roles][:2] == ["r_mkt", "r2"]
+
+
+async def _texts_any(session, ids):
+    return {i: f"role {i}" for i in ids}
+
+
+def _ranked_svc():
+    return SnapshotService(
+        Settings(), embedder=FakeEmbedder(), tfidf_matcher=FakeMatcher(),
+        reranker=FakeReranker(preferred_order=["r2", "r_mkt", "r1", "r3", "r4"]),
+    )
+
+
+async def test_roles_she_has_no_skills_of_are_not_recommended(monkeypatch):
+    calls = []
+
+    async def _counts(session, role_ids, embed, exact, threshold):
+        calls.append((set(embed), set(exact), threshold))
+        return {"r2": 3, "r_mkt": 0, "r1": 2, "r3": 0, "r4": 1}
+
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts_any)
+    monkeypatch.setattr(roles_repo, "matched_counts_for_roles", _counts)
+    resp = await _ranked_svc().generate(_request(), session=object())
+    assert [r.role_id for r in resp.recommended_roles] == ["r2", "r1", "r4"]
+    embed, exact, threshold = calls[0]
+    assert threshold == Settings().gap_cosine_threshold
+    assert "s_coord" in embed  # career-break skills count, as on the gap screen
+    assert embed <= exact
+
+
+async def test_zero_match_rule_is_skipped_without_skills_and_on_lookup_failure(monkeypatch):
+    async def _broken(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts_any)
+    monkeypatch.setattr(roles_repo, "matched_counts_for_roles", _broken)
+    resp = await _ranked_svc().generate(_request(), session=object())
+    assert [r.role_id for r in resp.recommended_roles] == ["r2", "r_mkt", "r1"]
+
+    svc = _ranked_svc()
+    assert [x.role_id for x in await svc._with_matched_skills(_ranked("A", "B"), ([], []), object())] == ["A", "B"]
+
+
+async def test_when_no_role_matches_her_skills_the_top_pick_stays(monkeypatch):
+    async def _none(session, role_ids, embed, exact, threshold):
+        return {}
+
+    monkeypatch.setattr(roles_repo, "get_rerank_texts", _texts_any)
+    monkeypatch.setattr(roles_repo, "matched_counts_for_roles", _none)
+    resp = await _ranked_svc().generate(_request(), session=object())
+    assert [r.role_id for r in resp.recommended_roles] == ["r2"]

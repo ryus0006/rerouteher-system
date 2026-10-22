@@ -81,7 +81,18 @@ class SnapshotService:
         # Skills matched from a lone mention phrase count toward her skills and the gap, but
         # stay out of the occupation match so they never shift the matched role.
         occupation_skills = [p for p in professional if p.skill_id not in phrase_ids]
-        previous, recommended = await self._match_occupation(req, occupation_skills, session)
+        # Her skills as the gap screen counts them: CV and career-break skills also cover
+        # similar role skills; ticked skills cover only themselves.
+        embed_ids = [
+            p.skill_id for p in [*professional, *reframed]
+            if p.skill_id and p.source != "role_confirmed"
+        ]
+        exact_ids = embed_ids + [
+            p.skill_id for p in professional if p.skill_id and p.source == "role_confirmed"
+        ]
+        previous, recommended = await self._match_occupation(
+            req, occupation_skills, session, (embed_ids, exact_ids)
+        )
         logger.info(
             "snapshot: professional=%d reframed=%d occupation=%s recommended=%s",
             len(professional),
@@ -312,7 +323,8 @@ class SnapshotService:
 
     # ------------------------------------------------------------- occupation
     async def _match_occupation(
-        self, req: SnapshotRequest, professional: list[ProfessionalSkill], session: AsyncSession
+        self, req: SnapshotRequest, professional: list[ProfessionalSkill], session: AsyncSession,
+        held: tuple[list[str], list[str]] = ([], []),
     ) -> tuple[PreviousOccupation | None, list[RecommendedRole]]:
         # alias-normalize the query inputs once so both tiers see the same normalized text.
         # Titles are taken in CV order (most recent first) so the previous occupation is the
@@ -347,7 +359,7 @@ class SnapshotService:
         # with the context-aware cross-encoder. Falls through if disabled/unavailable/empty.
         if self._reranker is not None and self._settings.rerank_enabled and (titles or skill_names):
             reranked = await self._rerank_pool(
-                per_title, profile_vec, titles, skill_names, session
+                per_title, profile_vec, titles, skill_names, session, held
             )
             if reranked:
                 return reranked
@@ -482,7 +494,7 @@ class SnapshotService:
                 )
         return per_title
 
-    async def _rerank_pool(self, per_title, profile_vec, titles, skill_names, session):
+    async def _rerank_pool(self, per_title, profile_vec, titles, skill_names, session, held=([], [])):
         """Rank a unified candidate pool (Tier-1 resolved roles + embedding kNN) with the
         cross-encoder. Returns (previous_occupation, recommended) or None to fall through.
         The query is title + skills only - no raw CV text, so no PII is scored."""
@@ -515,6 +527,7 @@ class SnapshotService:
         ranked_all = await anyio.to_thread.run_sync(self._reranker.rerank, query, candidates)
         if not ranked_all:
             return None
+        ranked_all = await self._with_matched_skills(ranked_all, held, session)
         # The top pick is her previous occupation: a role linked to two or more of her job
         # titles when there is one (the best ranked of them), since one role across her
         # career outweighs a word in the latest title ("quality assurance chemist" and
@@ -542,6 +555,29 @@ class SnapshotService:
             self._reranker.model_id, [(r.role, r.similarity) for r in recommended],
         )
         return previous, recommended
+
+    async def _with_matched_skills(self, ranked, held, session):
+        """Drop roles she has none of the skills of, counted as the gap screen counts them (a
+        role she matches 0 skills of is not a role for her). Only judged when she has skills;
+        when no role has a match, the cross-encoder's top stays so she still gets a role.
+        Unchanged if the lookup fails."""
+        embed_ids, exact_ids = held
+        if not ranked or not exact_ids:
+            return list(ranked)
+        try:
+            counts = await roles_repo.matched_counts_for_roles(
+                session, [x.role_id for x in ranked], embed_ids, exact_ids,
+                self._settings.gap_cosine_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001 - the filter must not fail the snapshot
+            logger.warning("matched skill count lookup failed: %s", type(exc).__name__)
+            return list(ranked)
+        kept = [x for x in ranked if counts.get(x.role_id, 0) > 0]
+        logger.info(
+            "matched skill counts: %s (dropped %d with none)",
+            [(x.role_id, counts.get(x.role_id, 0)) for x in ranked], len(ranked) - len(kept),
+        )
+        return kept or list(ranked[:1])
 
     def _excluded(self) -> list[str]:
         return self._placeholder_roles or []

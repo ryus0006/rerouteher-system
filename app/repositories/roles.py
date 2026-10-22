@@ -187,6 +187,38 @@ async def best_similarity_for_role(
     return {str(r.rid): float(r.best_sim) for r in rows}
 
 
+async def matched_counts_for_roles(
+    session: AsyncSession,
+    role_ids: list[str],
+    embed_skill_ids: list[str],
+    exact_skill_ids: list[str],
+    threshold: float,
+) -> dict[str, int]:
+    """role_id -> how many of the role's non-soft skills she has, as the gap screen counts
+    them: the exact skill, or one of embed_skill_ids at least `threshold` similar. Bounded
+    to the given roles and skills."""
+    if not role_ids:
+        return {}
+    rows = (
+        await session.execute(
+            text(
+                "SELECT rs.role_id, "
+                "count(*) FILTER (WHERE rs.skill_id = ANY(:exact) OR best.sim >= :thr) AS owned "
+                "FROM role_skills rs "
+                "LEFT JOIN LATERAL ("
+                "  SELECT MAX(1 - (rt.embedding <=> ut.embedding)) AS sim "
+                "  FROM skill_taxonomy rt JOIN skill_taxonomy ut ON ut.skill_id = ANY(:embed) "
+                "  WHERE rt.skill_id = rs.skill_id"
+                ") best ON true "
+                "WHERE rs.role_id = ANY(:rids) AND rs.skill_type <> 'soft' "
+                "GROUP BY rs.role_id"
+            ),
+            {"rids": role_ids, "embed": embed_skill_ids, "exact": exact_skill_ids, "thr": threshold},
+        )
+    ).all()
+    return {str(row.role_id): int(row.owned) for row in rows}
+
+
 async def placeholder_role_ids(session: AsyncSession, min_shared: int) -> set[str]:
     """Roles whose technical/digital skill list is identical to the list of at least
     `min_shared` roles (their own included). These are the data's catch-all lists, e.g. one
